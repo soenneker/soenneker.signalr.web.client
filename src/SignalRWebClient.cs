@@ -15,7 +15,8 @@ namespace Soenneker.SignalR.Web.Client;
 ///<inheritdoc cref="ISignalRWebClient"/>
 public class SignalRWebClient : ISignalRWebClient
 {
-    private readonly HubConnection _connection;
+    public HubConnection Connection { get; }
+
     private readonly AsyncRetryPolicy _retryPolicy;
     private bool _disposed;
     private readonly SignalRWebClientOptions _options;
@@ -45,11 +46,11 @@ public class SignalRWebClient : ISignalRWebClient
                 httpConnectionOptions.Transports = _options.TransportType;
             });
 
-        _connection = hubConnectionBuilder.Build();
+        Connection = hubConnectionBuilder.Build();
 
-        _connection.KeepAliveInterval = _options.KeepAliveInterval;
+        Connection.KeepAliveInterval = _options.KeepAliveInterval;
 
-        _connection.Closed += async error =>
+        Connection.Closed += async error =>
         {
             if (_options.Log)
                 _options.Logger?.LogError(error, "Connection closed due to an error. Waiting to reconnect to hub ({HubUrl})...", _options.HubUrl);
@@ -58,7 +59,7 @@ public class SignalRWebClient : ISignalRWebClient
             await HandleReconnectAsync().NoSync();
         };
 
-        _connection.Reconnecting += error =>
+        Connection.Reconnecting += error =>
         {
             if (_options.Log)
                 _options.Logger?.LogWarning(error, "Connection lost due to an error. Reconnecting to hub ({HubUrl})...", _options.HubUrl);
@@ -67,7 +68,7 @@ public class SignalRWebClient : ISignalRWebClient
             return Task.CompletedTask;
         };
 
-        _connection.Reconnected += connectionId =>
+        Connection.Reconnected += connectionId =>
         {
             if (_options.Log)
                 _options.Logger?.LogInformation("Reconnected to hub ({HubUrl}). Connection ID: {ConnectionId}", _options.HubUrl, connectionId);
@@ -95,7 +96,7 @@ public class SignalRWebClient : ISignalRWebClient
         {
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await _connection.StartAsync().NoSync();
+                await Connection.StartAsync().NoSync();
 
                 if (_options.Log)
                     _options.Logger?.LogInformation("SignalR Reconnected to hub ({HubUrl}).", _options.HubUrl);
@@ -116,7 +117,8 @@ public class SignalRWebClient : ISignalRWebClient
         {
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await _connection.StartAsync().NoSync();
+                await Connection.StartAsync().NoSync();
+
                 if (_options.Log)
                     _options.Logger?.LogInformation("SignalR Connected to hub ({HubUrl}).", _options.HubUrl);
             }).NoSync();
@@ -132,7 +134,7 @@ public class SignalRWebClient : ISignalRWebClient
 
     public async ValueTask StopConnectionAsync()
     {
-        await _connection.StopAsync().NoSync();
+        await Connection.StopAsync().NoSync();
 
         if (_options.Log)
             _options.Logger?.LogInformation("SignalR Disconnected from hub ({HubUrl}).", _options.HubUrl);
@@ -145,7 +147,7 @@ public class SignalRWebClient : ISignalRWebClient
             if (_options.Log)
                 _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl}).", _options.HubUrl);
 
-            await _connection.DisposeAsync().NoSync();
+            await Connection.DisposeAsync().NoSync();
             _disposed = true;
 
             GC.SuppressFinalize(this);

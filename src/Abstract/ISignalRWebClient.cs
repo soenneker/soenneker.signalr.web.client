@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.SignalR.Client;
 using System;
 using System.Threading.Tasks;
 
@@ -11,6 +12,8 @@ namespace Soenneker.SignalR.Web.Client.Abstract;
 /// </summary>
 public interface ISignalRWebClient : IAsyncDisposable
 {
+    HubConnection Connection { get; }
+
     /// <summary>
     /// Starts the SignalR connection asynchronously.
     /// </summary>
