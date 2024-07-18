@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Soenneker.SignalR.Web.Client.Abstract;
@@ -18,11 +19,11 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// Starts the SignalR connection asynchronously.
     /// </summary>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    ValueTask StartConnection();
+    ValueTask StartConnection(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stops the SignalR connection asynchronously.
     /// </summary>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    ValueTask StopConnection();
+    ValueTask StopConnection(CancellationToken cancellationToken = default);
 }

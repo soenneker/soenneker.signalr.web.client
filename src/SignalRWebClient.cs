@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
@@ -90,13 +91,13 @@ public class SignalRWebClient : ISignalRWebClient
                 });
     }
 
-    private async ValueTask HandleReconnect()
+    private async ValueTask HandleReconnect(CancellationToken cancellationToken = default)
     {
         try
         {
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await Connection.StartAsync().NoSync();
+                await Connection.StartAsync(cancellationToken).NoSync();
 
                 if (_options.Log)
                     _options.Logger?.LogInformation("SignalR Reconnected to hub ({HubUrl}).", _options.HubUrl);
@@ -111,13 +112,13 @@ public class SignalRWebClient : ISignalRWebClient
         }
     }
 
-    public async ValueTask StartConnection()
+    public async ValueTask StartConnection(CancellationToken cancellationToken = default)
     {
         try
         {
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await Connection.StartAsync().NoSync();
+                await Connection.StartAsync(cancellationToken).NoSync();
 
                 if (_options.Log)
                     _options.Logger?.LogInformation("SignalR Connected to hub ({HubUrl}).", _options.HubUrl);
@@ -132,9 +133,9 @@ public class SignalRWebClient : ISignalRWebClient
         }
     }
 
-    public async ValueTask StopConnection()
+    public async ValueTask StopConnection(CancellationToken cancellationToken = default)
     {
-        await Connection.StopAsync().NoSync();
+        await Connection.StopAsync(cancellationToken).NoSync();
 
         if (_options.Log)
             _options.Logger?.LogInformation("SignalR Disconnected from hub ({HubUrl}).", _options.HubUrl);
