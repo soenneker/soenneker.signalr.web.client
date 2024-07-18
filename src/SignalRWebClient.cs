@@ -56,7 +56,7 @@ public class SignalRWebClient : ISignalRWebClient
                 _options.Logger?.LogError(error, "Connection closed due to an error. Waiting to reconnect to hub ({HubUrl})...", _options.HubUrl);
 
             _options.ConnectionClosed?.Invoke(error);
-            await HandleReconnectAsync().NoSync();
+            await HandleReconnect().NoSync();
         };
 
         Connection.Reconnecting += error =>
@@ -90,7 +90,7 @@ public class SignalRWebClient : ISignalRWebClient
                 });
     }
 
-    private async ValueTask HandleReconnectAsync()
+    private async ValueTask HandleReconnect()
     {
         try
         {
@@ -111,7 +111,7 @@ public class SignalRWebClient : ISignalRWebClient
         }
     }
 
-    public async ValueTask StartConnectionAsync()
+    public async ValueTask StartConnection()
     {
         try
         {
@@ -132,7 +132,7 @@ public class SignalRWebClient : ISignalRWebClient
         }
     }
 
-    public async ValueTask StopConnectionAsync()
+    public async ValueTask StopConnection()
     {
         await Connection.StopAsync().NoSync();
 

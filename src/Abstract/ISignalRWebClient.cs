@@ -18,11 +18,11 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// Starts the SignalR connection asynchronously.
     /// </summary>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    ValueTask StartConnectionAsync();
+    ValueTask StartConnection();
 
     /// <summary>
     /// Stops the SignalR connection asynchronously.
     /// </summary>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    ValueTask StopConnectionAsync();
+    ValueTask StopConnection();
 }
