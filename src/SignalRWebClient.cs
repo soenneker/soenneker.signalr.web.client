@@ -146,7 +146,7 @@ public class SignalRWebClient : ISignalRWebClient
         if (!_disposed)
         {
             if (_options.Log)
-                _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl}).", _options.HubUrl);
+                _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl})...", _options.HubUrl);
 
             await Connection.DisposeAsync().NoSync();
             _disposed = true;
