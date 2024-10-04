@@ -47,9 +47,13 @@ public class SignalRWebClient : ISignalRWebClient
                 httpConnectionOptions.Transports = _options.TransportType;
             });
 
+        if (options.StatefulReconnect)
+            hubConnectionBuilder.WithStatefulReconnect();
+
         Connection = hubConnectionBuilder.Build();
 
-        Connection.KeepAliveInterval = _options.KeepAliveInterval;
+        if (_options.KeepAliveInterval != null)
+            Connection.KeepAliveInterval = _options.KeepAliveInterval.Value;
 
         Connection.Closed += async error =>
         {
@@ -145,11 +149,12 @@ public class SignalRWebClient : ISignalRWebClient
     {
         if (!_disposed)
         {
+            _disposed = true;
+
             if (_options.Log)
                 _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl})...", _options.HubUrl);
 
             await Connection.DisposeAsync().NoSync();
-            _disposed = true;
 
             GC.SuppressFinalize(this);
         }

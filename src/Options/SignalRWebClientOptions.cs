@@ -57,7 +57,7 @@ public class SignalRWebClientOptions
     /// Gets or sets the interval at which the client sends keep-alive pings to the server.
     /// Default value is 15 seconds.
     /// </summary>
-    public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
+    public TimeSpan? KeepAliveInterval { get; set; }
 
     /// <summary>
     /// Gets or sets the action to be invoked when the connection is closed due to an error.
@@ -78,4 +78,8 @@ public class SignalRWebClientOptions
     /// Gets or sets the action to be invoked when all retry attempts have been exhausted.
     /// </summary>
     public Action? RetriesExhausted { get; set; }
+
+    public bool StatefulReconnect { get; set; }
+
+    public int? StatefulReconnectBufferSize { get; set; }
 }
