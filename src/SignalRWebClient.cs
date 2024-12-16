@@ -55,32 +55,9 @@ public class SignalRWebClient : ISignalRWebClient
         if (_options.KeepAliveInterval != null)
             Connection.KeepAliveInterval = _options.KeepAliveInterval.Value;
 
-        Connection.Closed += async error =>
-        {
-            if (_options.Log)
-                _options.Logger?.LogError(error, "Connection closed due to an error. Waiting to reconnect to hub ({HubUrl})...", _options.HubUrl);
-
-            _options.ConnectionClosed?.Invoke(error);
-            await HandleReconnect().NoSync();
-        };
-
-        Connection.Reconnecting += error =>
-        {
-            if (_options.Log)
-                _options.Logger?.LogWarning(error, "Connection lost due to an error. Reconnecting to hub ({HubUrl})...", _options.HubUrl);
-
-            _options.ConnectionReconnecting?.Invoke(error);
-            return Task.CompletedTask;
-        };
-
-        Connection.Reconnected += connectionId =>
-        {
-            if (_options.Log)
-                _options.Logger?.LogInformation("Reconnected to hub ({HubUrl}). Connection ID: {ConnectionId}", _options.HubUrl, connectionId);
-
-            _options.ConnectionReconnected?.Invoke(connectionId);
-            return Task.CompletedTask;
-        };
+        Connection.Closed += OnConnectionClosed;
+        Connection.Reconnecting += OnConnectionReconnecting;
+        Connection.Reconnected += OnConnectionReconnected;
 
         // Define the retry policy using Polly
         _retryPolicy = Policy
@@ -93,6 +70,33 @@ public class SignalRWebClient : ISignalRWebClient
                         _options.Logger?.LogWarning(exception, "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.", attempt, _options.HubUrl,
                             timeSpan);
                 });
+    }
+
+    private async Task OnConnectionClosed(Exception? error)
+    {
+        if (_options.Log)
+            _options.Logger?.LogError(error, "Connection closed due to an error. Waiting to reconnect to hub ({HubUrl})...", _options.HubUrl);
+
+        _options.ConnectionClosed?.Invoke(error);
+        await HandleReconnect().NoSync();
+    }
+
+    private Task OnConnectionReconnecting(Exception? error)
+    {
+        if (_options.Log)
+            _options.Logger?.LogWarning(error, "Connection lost due to an error. Reconnecting to hub ({HubUrl})...", _options.HubUrl);
+
+        _options.ConnectionReconnecting?.Invoke(error);
+        return Task.CompletedTask;
+    }
+
+    private Task OnConnectionReconnected(string? connectionId)
+    {
+        if (_options.Log)
+            _options.Logger?.LogInformation("Reconnected to hub ({HubUrl}). Connection ID: {ConnectionId}", _options.HubUrl, connectionId);
+
+        _options.ConnectionReconnected?.Invoke(connectionId);
+        return Task.CompletedTask;
     }
 
     private async ValueTask HandleReconnect(CancellationToken cancellationToken = default)
@@ -137,12 +141,12 @@ public class SignalRWebClient : ISignalRWebClient
         }
     }
 
-    public async ValueTask StopConnection(CancellationToken cancellationToken = default)
+    public Task StopConnection(CancellationToken cancellationToken = default)
     {
-        await Connection.StopAsync(cancellationToken).NoSync();
-
         if (_options.Log)
-            _options.Logger?.LogInformation("SignalR Disconnected from hub ({HubUrl}).", _options.HubUrl);
+            _options.Logger?.LogInformation("SignalR disconnecting from hub ({HubUrl})...", _options.HubUrl);
+
+        return Connection.StopAsync(cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -154,6 +158,11 @@ public class SignalRWebClient : ISignalRWebClient
             if (_options.Log)
                 _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl})...", _options.HubUrl);
 
+            Connection.Closed -= OnConnectionClosed;
+            Connection.Reconnected -= OnConnectionReconnected;
+            Connection.Reconnecting -= OnConnectionReconnecting;
+
+            await StopConnection().NoSync();
             await Connection.DisposeAsync().NoSync();
 
             GC.SuppressFinalize(this);

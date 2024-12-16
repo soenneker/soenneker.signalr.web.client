@@ -25,5 +25,5 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// Stops the SignalR connection asynchronously.
     /// </summary>
     /// <returns>A task that represents the asynchronous operation.</returns>
-    ValueTask StopConnection(CancellationToken cancellationToken = default);
+    Task StopConnection(CancellationToken cancellationToken = default);
 }
