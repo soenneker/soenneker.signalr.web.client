@@ -8,7 +8,7 @@ namespace Soenneker.SignalR.Web.Client.Tests;
 
 public abstract class Fixture : UnitFixture
 {
-    public override System.Threading.Tasks.Task InitializeAsync()
+    public override System.Threading.Tasks.ValueTask InitializeAsync()
     {
         SetupIoC(Services);
 
