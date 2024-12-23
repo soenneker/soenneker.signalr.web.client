@@ -6,7 +6,7 @@ using Soenneker.Utils.Test;
 
 namespace Soenneker.SignalR.Web.Client.Tests;
 
-public abstract class Fixture : UnitFixture
+public class Fixture : UnitFixture
 {
     public override System.Threading.Tasks.ValueTask InitializeAsync()
     {
