@@ -45,6 +45,6 @@
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.1" />
         <PackageReference Include="Polly" Version="8.5.1" />
         <PackageReference Include="Soenneker.Extensions.Task" Version="3.0.86" />
-        <PackageReference Include="Soenneker.Extensions.ValueTask" Version="3.0.75" />
+        <PackageReference Include="Soenneker.Extensions.ValueTask" Version="3.0.76" />
     </ItemGroup>
 </Project>
