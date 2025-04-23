@@ -10,6 +10,7 @@ using Soenneker.Extensions.Task;
 using Soenneker.Extensions.ValueTask;
 using Soenneker.SignalR.Web.Client.Abstract;
 using Soenneker.SignalR.Web.Client.Options;
+using Soenneker.Utils.Random;
 
 namespace Soenneker.SignalR.Web.Client;
 
@@ -21,6 +22,8 @@ public class SignalRWebClient : ISignalRWebClient
     private readonly AsyncRetryPolicy _retryPolicy;
     private bool _disposed;
     private readonly SignalRWebClientOptions _options;
+
+    private int _reconnecting; // 0 = false, 1 = true
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SignalRWebClient"/> class.
@@ -61,15 +64,28 @@ public class SignalRWebClient : ISignalRWebClient
 
         // Define the retry policy using Polly
         _retryPolicy = Policy
-            .Handle<Exception>()
-            .WaitAndRetryAsync(_options.MaxRetryAttempts, attempt =>
-                    TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                (exception, timeSpan, attempt, context) =>
-                {
-                    if (_options.Log)
-                        _options.Logger?.LogWarning(exception, "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.", attempt, _options.HubUrl,
-                            timeSpan);
-                });
+                       .Handle<Exception>(ex =>
+                       {
+                           _options.Logger?.LogError(ex, "SignalR retry handler caught exception when connecting to hub ({HubUrl})", _options.HubUrl);
+                           return true; // always retry on any exception
+                       })
+                       .WaitAndRetryAsync(_options.MaxRetryAttempts,
+                           attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt) + RandomUtil.NextDouble()),
+                           async (exception, timeSpan, attempt, context) =>
+                           {
+                               if (Connection.State == HubConnectionState.Connected)
+                               {
+                                   _options.Logger?.LogInformation("SignalR connected during retry attempt {Attempt}. Skipping further retries.", attempt);
+                                   return; // stop retrying, already connected
+                               }
+
+                               if (_options.Log)
+                                   _options.Logger?.LogWarning(exception,
+                                       "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.",
+                                       attempt, _options.HubUrl, timeSpan);
+
+                               await Task.CompletedTask;
+                           });
     }
 
     private async Task OnConnectionClosed(Exception? error)
@@ -101,6 +117,9 @@ public class SignalRWebClient : ISignalRWebClient
 
     private async ValueTask HandleReconnect(CancellationToken cancellationToken = default)
     {
+        if (Interlocked.Exchange(ref _reconnecting, 1) == 1)
+            return; // already reconnecting
+
         try
         {
             await _retryPolicy.ExecuteAsync(async () =>
@@ -118,6 +137,10 @@ public class SignalRWebClient : ISignalRWebClient
 
             _options.RetriesExhausted?.Invoke();
         }
+        finally
+        {
+            Interlocked.Exchange(ref _reconnecting, 0);
+        }
     }
 
     public async ValueTask StartConnection(CancellationToken cancellationToken = default)
@@ -128,15 +151,21 @@ public class SignalRWebClient : ISignalRWebClient
             {
                 await Connection.StartAsync(cancellationToken).NoSync();
 
-                if (_options.Log)
-                    _options.Logger?.LogInformation("SignalR Connected to hub ({HubUrl}).", _options.HubUrl);
+                // Do not trust success here immediately
             }).NoSync();
+
+            if (Connection.State == HubConnectionState.Connected)
+            {
+                _options.Logger?.LogInformation("SignalR Connected to hub ({HubUrl}).", _options.HubUrl);
+            }
+            else
+            {
+                _options.Logger?.LogWarning("SignalR connection attempt finished but state is {State}.", Connection.State);
+            }
         }
         catch (Exception ex)
         {
-            if (_options.Log)
-                _options.Logger?.LogError(ex, "Max retry attempts reached during initial connection to hub ({HubUrl}). Stopping retries.", _options.HubUrl);
-
+            _options.Logger?.LogError(ex, "Max retry attempts reached during initial connection to hub ({HubUrl}). Stopping retries.", _options.HubUrl);
             _options.RetriesExhausted?.Invoke();
         }
     }
