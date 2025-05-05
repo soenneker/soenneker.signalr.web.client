@@ -1,4 +1,4 @@
-# Contributing to Soenneker.SignalR.Web.Client
+﻿# Contributing to Soenneker.SignalR.Web.Client
 
 We're excited that you're interested in contributing!
 
