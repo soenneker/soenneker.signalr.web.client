@@ -9,12 +9,12 @@ namespace Soenneker.SignalR.Web.Client.Options;
 /// <summary>
 /// Represents the options for configuring a SignalR web client.
 /// </summary>
-public class SignalRWebClientOptions
+public sealed class SignalRWebClientOptions
 {
     /// <summary>
     /// Gets or sets the URL of the SignalR hub.
     /// </summary>
-    public string HubUrl { get; set; }
+    public string HubUrl { get; set; } = null!;
 
     /// <summary>
     /// Gets or sets the maximum number of retry attempts for reconnecting.

@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 using Polly;
@@ -10,12 +6,17 @@ using Soenneker.Extensions.Task;
 using Soenneker.Extensions.ValueTask;
 using Soenneker.SignalR.Web.Client.Abstract;
 using Soenneker.SignalR.Web.Client.Options;
+using Soenneker.Utils.AtomicBool;
 using Soenneker.Utils.Random;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Soenneker.SignalR.Web.Client;
 
 ///<inheritdoc cref="ISignalRWebClient"/>
-public class SignalRWebClient : ISignalRWebClient
+public sealed class SignalRWebClient : ISignalRWebClient
 {
     public HubConnection Connection { get; }
 
@@ -23,7 +24,7 @@ public class SignalRWebClient : ISignalRWebClient
     private bool _disposed;
     private readonly SignalRWebClientOptions _options;
 
-    private int _reconnecting; // 0 = false, 1 = true
+    private readonly AtomicBool _reconnecting = new AtomicBool(false);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SignalRWebClient"/> class.
@@ -117,7 +118,7 @@ public class SignalRWebClient : ISignalRWebClient
 
     private async ValueTask HandleReconnect(CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _reconnecting, 1) == 1)
+        if (!_reconnecting.TrySetTrue())
             return; // already reconnecting
 
         try
@@ -139,7 +140,7 @@ public class SignalRWebClient : ISignalRWebClient
         }
         finally
         {
-            Interlocked.Exchange(ref _reconnecting, 0);
+            _reconnecting.Value = false;
         }
     }
 
@@ -193,8 +194,6 @@ public class SignalRWebClient : ISignalRWebClient
 
             await StopConnection().NoSync();
             await Connection.DisposeAsync().NoSync();
-
-            GC.SuppressFinalize(this);
         }
     }
 }
