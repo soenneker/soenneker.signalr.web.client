@@ -45,7 +45,7 @@
         <PackageReference Include="Polly" Version="8.6.4" />
         <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.107" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="4.0.97" />
-        <PackageReference Include="Soenneker.Utils.AtomicBool" Version="4.0.10" />
+        <PackageReference Include="Soenneker.Utils.AtomicBool" Version="4.0.11" />
         <PackageReference Include="Soenneker.Utils.Random" Version="4.0.99" />
     </ItemGroup>
 </Project>
