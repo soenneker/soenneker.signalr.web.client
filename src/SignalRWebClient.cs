@@ -6,12 +6,12 @@ using Soenneker.Extensions.Task;
 using Soenneker.Extensions.ValueTask;
 using Soenneker.SignalR.Web.Client.Abstract;
 using Soenneker.SignalR.Web.Client.Options;
-using Soenneker.Utils.AtomicBool;
 using Soenneker.Utils.Random;
 using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Soenneker.Atomics.Bools;
 
 namespace Soenneker.SignalR.Web.Client;
 
