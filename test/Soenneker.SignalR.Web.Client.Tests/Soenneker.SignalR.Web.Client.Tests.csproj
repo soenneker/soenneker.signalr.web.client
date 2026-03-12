@@ -27,7 +27,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\src\Soenneker.SignalR.Web.Client.csproj" />
+        <ProjectReference Include="..\..\src\Soenneker.SignalR.Web.Client\Soenneker.SignalR.Web.Client.csproj" />
     </ItemGroup>
 
     <ItemGroup>
