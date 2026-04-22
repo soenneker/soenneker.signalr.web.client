@@ -1,16 +1,15 @@
-using Soenneker.Tests.FixturedUnit;
-using Xunit;
+using Soenneker.Tests.HostedUnit;
 
 namespace Soenneker.SignalR.Web.Client.Tests;
 
-[Collection("Collection")]
-public class SignalRWebClientTests : FixturedUnitTest
+[ClassDataSource<Host>(Shared = SharedType.PerTestSession)]
+public class SignalRWebClientTests : HostedUnitTest
 {
-    public SignalRWebClientTests(Fixture fixture, ITestOutputHelper output) : base(fixture, output)
+    public SignalRWebClientTests(Host host) : base(host)
     {
     }
 
-    [Fact]
+    [Test]
     public void Default()
     {
 
