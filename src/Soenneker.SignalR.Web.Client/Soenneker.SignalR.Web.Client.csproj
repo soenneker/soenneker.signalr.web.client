@@ -49,6 +49,6 @@
         <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.121" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="4.0.113" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.26" />
-        <PackageReference Include="Soenneker.Utils.Random" Version="4.0.117" />
+        <PackageReference Include="Soenneker.Utils.Random" Version="4.0.118" />
     </ItemGroup>
 </Project>
