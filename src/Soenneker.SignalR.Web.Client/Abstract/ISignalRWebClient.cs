@@ -13,6 +13,9 @@ namespace Soenneker.SignalR.Web.Client.Abstract;
 /// </summary>
 public interface ISignalRWebClient : IAsyncDisposable
 {
+    /// <summary>
+    /// Gets connection.
+    /// </summary>
     HubConnection Connection { get; }
 
     /// <summary>

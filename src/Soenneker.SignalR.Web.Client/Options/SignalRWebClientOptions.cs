@@ -79,7 +79,13 @@ public sealed class SignalRWebClientOptions
     /// </summary>
     public Action? RetriesExhausted { get; set; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether stateful reconnect.
+    /// </summary>
     public bool StatefulReconnect { get; set; }
 
+    /// <summary>
+    /// Gets or sets stateful reconnect buffer size.
+    /// </summary>
     public int? StatefulReconnectBufferSize { get; set; }
 }
