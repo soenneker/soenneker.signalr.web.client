@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Soenneker.SignalR.Web.Client.Events;
 
 namespace Soenneker.SignalR.Web.Client.Options;
 
@@ -21,6 +22,12 @@ public sealed class SignalRWebClientOptions
     /// Default value is 5.
     /// </summary>
     public int MaxRetryAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether recovery continues with another
+    /// retry cycle after <see cref="MaxRetryAttempts"/> is reached.
+    /// </summary>
+    public bool ReconnectIndefinitely { get; set; } = true;
 
     /// <summary>
     /// Gets or sets the initial delay before the first retry attempt.
@@ -73,6 +80,13 @@ public sealed class SignalRWebClientOptions
     /// Gets or sets the action to be invoked when the connection is successfully reconnected.
     /// </summary>
     public Action<string?>? ConnectionReconnected { get; set; }
+
+    /// <summary>
+    /// Gets or sets the asynchronous callback invoked after an initial connection
+    /// or reconnection succeeds. Applications should use this callback to reload
+    /// authoritative state that may have changed while disconnected.
+    /// </summary>
+    public Func<SignalRConnectionRestoredContext, Task>? ConnectionRestored { get; set; }
 
     /// <summary>
     /// Gets or sets the action to be invoked when all retry attempts have been exhausted.
