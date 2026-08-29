@@ -21,12 +21,14 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// <summary>
     /// Starts the SignalR connection asynchronously.
     /// </summary>
-    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A task that completes after the Signal R Web Client has started.</returns>
     ValueTask StartConnection(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stops the SignalR connection asynchronously.
     /// </summary>
-    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <returns>A task that completes after the Signal R Web Client has stopped.</returns>
     Task StopConnection(CancellationToken cancellationToken = default);
 }
