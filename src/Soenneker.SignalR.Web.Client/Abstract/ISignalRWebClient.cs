@@ -6,15 +6,12 @@ using System.Threading.Tasks;
 namespace Soenneker.SignalR.Web.Client.Abstract;
 
 /// <summary>
-/// A resilient and dependable .NET SignalR web client
-/// </summary>
-/// <summary>
 /// Defines the contract for a SignalR web client that manages connections and reconnections to a SignalR hub.
 /// </summary>
 public interface ISignalRWebClient : IAsyncDisposable
 {
     /// <summary>
-    /// Gets connection.
+    /// Gets the underlying SignalR connection for registering hub handlers and invoking hub methods.
     /// </summary>
     HubConnection Connection { get; }
 
@@ -22,13 +19,13 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// Starts the SignalR connection asynchronously.
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A task that completes after the Signal R Web Client has started.</returns>
+    /// <returns>A task that completes after the connection attempt finishes.</returns>
     ValueTask StartConnection(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stops the SignalR connection asynchronously.
     /// </summary>
     /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A task that completes after the Signal R Web Client has stopped.</returns>
+    /// <returns>A task that completes after the connection has stopped.</returns>
     Task StopConnection(CancellationToken cancellationToken = default);
 }

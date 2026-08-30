@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
@@ -48,7 +49,15 @@ public sealed class SignalRWebClient : ISignalRWebClient
         });
 
         if (_options.StatefulReconnect)
+        {
             hubConnectionBuilder.WithStatefulReconnect();
+
+            if (_options.StatefulReconnectBufferSize is not null)
+            {
+                hubConnectionBuilder.Services.Configure<HubConnectionOptions>(connectionOptions =>
+                    connectionOptions.StatefulReconnectBufferSize = _options.StatefulReconnectBufferSize.Value);
+            }
+        }
 
         Connection = hubConnectionBuilder.Build();
 

@@ -30,8 +30,8 @@ public sealed class SignalRWebClientOptions
     public bool ReconnectIndefinitely { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets the initial delay before the first retry attempt.
-    /// Default value is 2 seconds.
+    /// Gets or sets the delay between exhausted retry cycles when
+    /// <see cref="ReconnectIndefinitely"/> is enabled. Default value is 2 seconds.
     /// </summary>
     public TimeSpan InitialRetryDelay { get; set; } = TimeSpan.FromSeconds(2);
 
@@ -99,7 +99,8 @@ public sealed class SignalRWebClientOptions
     public bool StatefulReconnect { get; set; }
 
     /// <summary>
-    /// Gets or sets stateful reconnect buffer size.
+    /// Gets or sets the maximum number of serialized message bytes buffered by stateful reconnect.
+    /// This value is used only when <see cref="StatefulReconnect"/> is enabled.
     /// </summary>
     public int? StatefulReconnectBufferSize { get; set; }
 }

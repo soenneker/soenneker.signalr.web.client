@@ -5,55 +5,55 @@
 
 # Soenneker.SignalR.Web.Client
 
-A resilient and dependable .NET SignalR web client.
+A SignalR client wrapper that retries initial connections, recovers closed connections, and exposes callbacks for restoring application state after a connection returns.
 
-## Install
+## Installation
 
 ```bash
 dotnet add package Soenneker.SignalR.Web.Client
 ```
 
-## Quick start
+## Usage
 
 ```csharp
-using Soenneker.SignalR.Web.Client.Abstract;
+using Microsoft.AspNetCore.Http.Connections;
+using Soenneker.SignalR.Web.Client;
+using Soenneker.SignalR.Web.Client.Options;
 
-ISignalRWebClient signalRWebClient = /* resolve from DI */;
-await signalRWebClient.StartConnection(default);
+var options = new SignalRWebClientOptions
+{
+    HubUrl = "https://api.example.com/hubs/updates",
+    AccessTokenProvider = () => Task.FromResult(accessToken),
+    TransportType = HttpTransportType.WebSockets,
+    ConnectionRestored = async context =>
+    {
+        // Reload authoritative state after the initial connection or a reconnect.
+        await SynchronizeAsync(context.IsReconnect);
+    },
+    RetriesExhausted = () => NotifyConnectionFailure()
+};
+
+await using var client = new SignalRWebClient(options);
+
+client.Connection.On<OrderUpdated>("OrderUpdated", update =>
+{
+    Apply(update);
+});
+
+await client.StartConnection(cancellationToken);
+await client.Connection.InvokeAsync("Subscribe", accountId, cancellationToken);
 ```
 
-Starts the SignalR connection asynchronously.
+The wrapper owns its `HubConnection`; dispose the wrapper when the connection is no longer needed. Use `Connection` to register handlers with `On(...)` and call hub methods with `InvokeAsync(...)`.
 
-## What you get
+## Reconnection behavior
 
-- `ISignalRWebClient` — A resilient and dependable .NET SignalR web client.
-- `SignalRConnectionRestoredContext` — Describes a SignalR connection that has been established and is ready for application-level synchronization.
-- `SignalRWebClientOptions` — Represents the options for configuring a SignalR web client.
+Each connection cycle retries a failed start up to `MaxRetryAttempts` times using exponential backoff. After an unexpected close, `ReconnectIndefinitely` starts another cycle after `InitialRetryDelay`; set it to `false` to stop after the first exhausted cycle. `RetriesExhausted` is invoked when recovery stops, and `ConnectionRestored` runs after both an initial connection and a successful recovery.
 
-## API at a glance
+Enable `StatefulReconnect` only when the server supports it. `StatefulReconnectBufferSize` controls the client-side buffered message bytes used by that mode.
 
-| API | What it does | Result / important behavior |
-| --- | --- | --- |
-| `ISignalRWebClient.Connection` | Gets connection. | Gets connection. |
-| `ISignalRWebClient.StartConnection(cancellationToken)` | Starts the SignalR connection asynchronously. | A task that completes after the Signal R Web Client has started. |
-| `ISignalRWebClient.StopConnection(cancellationToken)` | Stops the SignalR connection asynchronously. | A task that completes after the Signal R Web Client has stopped. |
-| `SignalRConnectionRestoredContext.ConnectionId` | Gets the current connection identifier, when the server provides one. | Gets the current connection identifier, when the server provides one. |
-| `SignalRConnectionRestoredContext.IsReconnect` | Gets a value indicating whether this connection restored a previously established session. | Gets a value indicating whether this connection restored a previously established session. |
-| `SignalRWebClientOptions.HubUrl` | Gets or sets the URL of the SignalR hub. | Gets or sets the URL of the SignalR hub. |
-| `SignalRWebClientOptions.MaxRetryAttempts` | Gets or sets the maximum number of retry attempts for reconnecting. Default value is 5. | Gets or sets the maximum number of retry attempts for reconnecting. Default value is 5. |
-| `SignalRWebClientOptions.ReconnectIndefinitely` | Gets or sets a value indicating whether recovery continues with another retry cycle after `MaxRetryAttempts` is reached. | Gets or sets a value indicating whether recovery continues with another retry cycle after `MaxRetryAttempts` is reached. |
-| `SignalRWebClientOptions.InitialRetryDelay` | Gets or sets the initial delay before the first retry attempt. Default value is 2 seconds. | Gets or sets the initial delay before the first retry attempt. Default value is 2 seconds. |
-| `SignalRWebClientOptions.Logger` | Gets or sets the logger to be used for logging events. | Gets or sets the logger to be used for logging events. |
-| `SignalRWebClientOptions.Log` | Gets or sets a value indicating whether to log connection events. | Gets or sets a value indicating whether to log connection events. |
-| `SignalRWebClientOptions.AccessTokenProvider` | Gets or sets the access token provider used for authentication. | Gets or sets the access token provider used for authentication. |
-| `SignalRWebClientOptions.Headers` | Gets or sets the custom headers to be sent with each request. | Gets or sets the custom headers to be sent with each request. |
-| `SignalRWebClientOptions.TransportType` | Gets or sets the transport type for the SignalR connection. | Gets or sets the transport type for the SignalR connection. |
-| `SignalRWebClientOptions.KeepAliveInterval` | Gets or sets the interval at which the client sends keep-alive pings to the server. Default value is 15 seconds. | Gets or sets the interval at which the client sends keep-alive pings to the server. Default value is 15 seconds. |
-| `SignalRWebClientOptions.ConnectionClosed` | Gets or sets the action to be invoked when the connection is closed due to an error. | Gets or sets the action to be invoked when the connection is closed due to an error. |
-| `SignalRWebClientOptions.ConnectionReconnecting` | Gets or sets the action to be invoked when the connection is reconnecting after being lost. | Gets or sets the action to be invoked when the connection is reconnecting after being lost. |
-| `SignalRWebClientOptions.ConnectionReconnected` | Gets or sets the action to be invoked when the connection is successfully reconnected. | Gets or sets the action to be invoked when the connection is successfully reconnected. |
+Call `StopConnection` for an intentional disconnect. This suppresses closed-connection recovery until `StartConnection` is called again.
 
-## Practical notes
+## Authentication and headers
 
-- Cancellation stops pending work; it does not undo work that has already completed.
-- Dispose instances you own when their scope ends so held resources can be released.
+`AccessTokenProvider` is evaluated by SignalR when it needs a bearer token. Static request headers can be supplied through `Headers`; avoid placing secrets in headers that may be sent by transports or intermediaries you do not control.
