@@ -6,6 +6,7 @@ using Polly.Retry;
 using Soenneker.Atomics.ValueBools;
 using Soenneker.Extensions.Task;
 using Soenneker.Extensions.ValueTask;
+using Soenneker.Extensions.CancellationTokens;
 using Soenneker.SignalR.Web.Client.Abstract;
 using Soenneker.SignalR.Web.Client.Events;
 using Soenneker.SignalR.Web.Client.Options;
@@ -150,8 +151,8 @@ public sealed class SignalRWebClient : ISignalRWebClient
         if (!_reconnecting.TrySetTrue())
             return; // already reconnecting
 
-        using CancellationTokenSource linkedCancellationSource =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellationSource.Token);
+        CancellationToken linkedCancellationToken = cancellationToken.Link(_lifetimeCancellationSource.Token, out CancellationTokenSource? linkedCancellationSource);
+        using var linkedCancellationSourceScope = linkedCancellationSource;
 
         try
         {
@@ -171,11 +172,11 @@ public sealed class SignalRWebClient : ISignalRWebClient
                                               _options.Logger?.LogInformation("SignalR reconnected to hub ({HubUrl}).", _options.HubUrl);
 
                                           await NotifyConnectionRestored(Connection.ConnectionId, true).NoSync();
-                                      }, linkedCancellationSource.Token)
+                                      }, linkedCancellationToken)
                                       .NoSync();
                     return;
                 }
-                catch (OperationCanceledException) when (linkedCancellationSource.IsCancellationRequested)
+                catch (OperationCanceledException) when (linkedCancellationToken.IsCancellationRequested)
                 {
                     return;
                 }
@@ -195,11 +196,11 @@ public sealed class SignalRWebClient : ISignalRWebClient
                             "SignalR reconnect cycle exhausted for hub ({HubUrl}). Recovery will continue after {Delay}.", _options.HubUrl,
                             _options.InitialRetryDelay);
 
-                    await Task.Delay(_options.InitialRetryDelay, linkedCancellationSource.Token).NoSync();
+                    await Task.Delay(_options.InitialRetryDelay, linkedCancellationToken).NoSync();
                 }
             }
         }
-        catch (OperationCanceledException) when (linkedCancellationSource.IsCancellationRequested)
+        catch (OperationCanceledException) when (linkedCancellationToken.IsCancellationRequested)
         {
         }
         finally
