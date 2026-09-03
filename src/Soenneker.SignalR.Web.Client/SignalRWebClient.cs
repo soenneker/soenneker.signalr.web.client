@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Polly;
-using Polly.Retry;
+using Kevlar;
 using Soenneker.Atomics.ValueBools;
 using Soenneker.Extensions.Task;
 using Soenneker.Extensions.ValueTask;
@@ -23,7 +22,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
 {
     public HubConnection Connection { get; }
 
-    private readonly AsyncRetryPolicy _retryPolicy;
+    private readonly Shield _retryShield;
     private readonly SignalRWebClientOptions _options;
     private readonly CancellationTokenSource _lifetimeCancellationSource = new();
 
@@ -69,40 +68,42 @@ public sealed class SignalRWebClient : ISignalRWebClient
         Connection.Reconnecting += OnConnectionReconnecting;
         Connection.Reconnected += OnConnectionReconnected;
 
-        _retryPolicy = Policy.Handle<Exception>(ex =>
+        _retryShield = Shield.When<Exception>(ex =>
                              {
                                  _options.Logger?.LogError(ex, "SignalR retry handler caught exception when connecting to hub ({HubUrl})", _options.HubUrl);
                                  return true; // always retry on any exception
                              })
-                             .WaitAndRetryAsync(_options.MaxRetryAttempts,
-                                 // exponential backoff with jitter, avoiding Math.Pow
-                                 attempt =>
+                             .Retry(options =>
+                             {
+                                 options.MaxRetries = _options.MaxRetryAttempts;
+                                 options.Backoff = Backoff.Custom(attempt =>
                                  {
-                                     // Polly attempts are 1-based. Cap shift to avoid overflow / absurd delays.
+                                     // Attempts are 1-based. Cap shift to avoid overflow / absurd delays.
                                      int shift = attempt <= 30 ? attempt : 30;
                                      double backoffSeconds = 1 << shift; // 2,4,8,...
                                      double jitter = RandomUtil.NextDouble(); // [0,1)
                                      return TimeSpan.FromSeconds(backoffSeconds + jitter);
-                                 },
-                                 // non-async callback to avoid state machine allocation
-                                 (exception, timeSpan, attempt, context) =>
+                                 });
+                                 options.OnRetry = retry =>
                                  {
                                      if (Connection.State == HubConnectionState.Connected)
                                      {
                                          _options.Logger?.LogInformation("SignalR connected during retry attempt {Attempt}. Skipping further retries.",
-                                             attempt);
-                                         return Task.CompletedTask;
+                                             retry.AttemptNumber + 1);
+                                         retry.SuppressAdditionalAttempts();
+                                         return default;
                                      }
 
                                      if (_options.Log)
                                      {
-                                         _options.Logger?.LogWarning(exception,
-                                             "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.", attempt,
-                                             _options.HubUrl, timeSpan);
+                                         _options.Logger?.LogWarning(retry.Exception,
+                                             "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.",
+                                             retry.AttemptNumber + 1, _options.HubUrl, retry.Delay);
                                      }
 
-                                     return Task.CompletedTask;
-                                 });
+                                     return default;
+                                 };
+                             });
     }
 
     private async Task OnConnectionClosed(Exception? error)
@@ -160,7 +161,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
             {
                 try
                 {
-                    await _retryPolicy.ExecuteAsync(async ct =>
+                    await _retryShield.ExecuteAsync(async ct =>
                                       {
                                           if (_disposed.Value)
                                               return;
@@ -218,7 +219,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
 
         try
         {
-            await _retryPolicy.ExecuteAsync(async ct =>
+            await _retryShield.ExecuteAsync(async ct =>
                               {
                                   if (_disposed.Value)
                                       return;

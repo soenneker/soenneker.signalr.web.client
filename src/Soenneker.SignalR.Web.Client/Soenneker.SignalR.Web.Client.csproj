@@ -45,7 +45,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.11" />
-        <PackageReference Include="Polly" Version="8.7.0" />
+        <PackageReference Include="Kevlar" Version="1.1.0" />
         <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.128" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="4.0.120" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.38" />
