@@ -18,7 +18,7 @@ public sealed class SignalRWebClientOptions
     public string HubUrl { get; set; } = null!;
 
     /// <summary>
-    /// Gets or sets the maximum number of retry attempts for reconnecting.
+    /// Gets or sets the maximum number of retries after the initial connection attempt and during automatic reconnect.
     /// Default value is 5.
     /// </summary>
     public int MaxRetryAttempts { get; set; } = 5;
@@ -56,15 +56,36 @@ public sealed class SignalRWebClientOptions
     public IDictionary<string, string>? Headers { get; set; }
 
     /// <summary>
-    /// Gets or sets the transport type for the SignalR connection.
+    /// Gets or sets the transport to require, or null to let SignalR negotiate the best available transport.
     /// </summary>
-    public HttpTransportType TransportType { get; set; } = HttpTransportType.WebSockets;
+    public HttpTransportType? TransportType { get; set; }
 
     /// <summary>
     /// Gets or sets the interval at which the client sends keep-alive pings to the server.
     /// Default value is 15 seconds.
     /// </summary>
     public TimeSpan? KeepAliveInterval { get; set; }
+
+    /// <summary>
+    /// Gets or sets how long the client waits without receiving a server message before timing out.
+    /// Null uses SignalR's default.
+    /// </summary>
+    public TimeSpan? ServerTimeout { get; set; }
+
+    /// <summary>
+    /// Gets or sets a retry-delay provider whose argument is the zero-based retry count.
+    /// The default retries immediately, then after 2, 4, 8, and at most 30 seconds.
+    /// </summary>
+    public Func<long, TimeSpan>? RetryDelayProvider { get; set; }
+
+    internal TimeSpan GetRetryDelay(long retryCount)
+    {
+        TimeSpan delay = RetryDelayProvider?.Invoke(retryCount) ?? (retryCount <= 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(retryCount, 5)))));
+        if (delay < TimeSpan.Zero) throw new InvalidOperationException("Retry delays cannot be negative.");
+        return delay;
+    }
 
     /// <summary>
     /// Gets or sets the action to be invoked when the connection is closed due to an error.

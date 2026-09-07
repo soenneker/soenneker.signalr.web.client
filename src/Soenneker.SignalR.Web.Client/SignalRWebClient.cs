@@ -1,11 +1,8 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Kevlar;
+using Soenneker.Asyncs.Locks;
 using Soenneker.Atomics.ValueBools;
-using Soenneker.Extensions.Task;
-using Soenneker.Extensions.ValueTask;
-using Soenneker.Extensions.CancellationTokens;
 using Soenneker.SignalR.Web.Client.Abstract;
 using Soenneker.SignalR.Web.Client.Events;
 using Soenneker.SignalR.Web.Client.Options;
@@ -13,286 +10,233 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using Soenneker.Utils.Random;
 
 namespace Soenneker.SignalR.Web.Client;
 
-/// <inheritdoc cref="ISignalRWebClient"/>
 public sealed class SignalRWebClient : ISignalRWebClient
 {
     public HubConnection Connection { get; }
-
-    private readonly Shield _retryShield;
     private readonly SignalRWebClientOptions _options;
-    private readonly CancellationTokenSource _lifetimeCancellationSource = new();
-
-    private ValueAtomicBool _reconnecting = new(false);
-    private ValueAtomicBool _stopping = new(false);
-    private ValueAtomicBool _disposed = new(false);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly AsyncLock _connectionLock = new();
+    private readonly AsyncLock _reconnectLock = new();
+    private CancellationTokenSource? _reconnectCancellation;
+    private Task? _reconnectTask;
+    private ValueAtomicBool _stopping;
+    private ValueAtomicBool _disposed;
 
     public SignalRWebClient(SignalRWebClientOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrWhiteSpace(options.HubUrl)) throw new ArgumentException("A hub URL is required.", nameof(options));
+        if (options.MaxRetryAttempts is < 0 or > 1000) throw new ArgumentOutOfRangeException(nameof(options.MaxRetryAttempts));
+        if (options.InitialRetryDelay < TimeSpan.Zero || options.InitialRetryDelay > TimeSpan.FromDays(1))
+            throw new ArgumentOutOfRangeException(nameof(options.InitialRetryDelay));
+        if (options.KeepAliveInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options.KeepAliveInterval));
+        if (options.ServerTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options.ServerTimeout));
+        if (options.StatefulReconnectBufferSize <= 0) throw new ArgumentOutOfRangeException(nameof(options.StatefulReconnectBufferSize));
         _options = options;
 
-        IHubConnectionBuilder hubConnectionBuilder = new HubConnectionBuilder().WithUrl(_options.HubUrl, httpConnectionOptions =>
+        IHubConnectionBuilder builder = new HubConnectionBuilder().WithUrl(options.HubUrl, http =>
         {
-            if (_options.AccessTokenProvider is not null)
-                httpConnectionOptions.AccessTokenProvider = _options.AccessTokenProvider;
-
-            if (_options.Headers is not null)
-            {
-                foreach (KeyValuePair<string, string> header in _options.Headers)
-                    httpConnectionOptions.Headers.Add(header.Key, header.Value);
-            }
-
-            httpConnectionOptions.Transports = _options.TransportType;
+            if (options.AccessTokenProvider is not null)
+                http.AccessTokenProvider = async () => await options.AccessTokenProvider().ConfigureAwait(false);
+            if (options.Headers is not null)
+                foreach (KeyValuePair<string, string> header in options.Headers) http.Headers.Add(header.Key, header.Value);
+            if (options.TransportType is { } transport) http.Transports = transport;
         });
-
-        if (_options.StatefulReconnect)
+        if (options.StatefulReconnect)
         {
-            hubConnectionBuilder.WithStatefulReconnect();
-
-            if (_options.StatefulReconnectBufferSize is not null)
-            {
-                hubConnectionBuilder.Services.Configure<HubConnectionOptions>(connectionOptions =>
-                    connectionOptions.StatefulReconnectBufferSize = _options.StatefulReconnectBufferSize.Value);
-            }
+            builder.WithStatefulReconnect();
+            if (options.StatefulReconnectBufferSize is { } size)
+                builder.Services.Configure<HubConnectionOptions>(configured => configured.StatefulReconnectBufferSize = size);
         }
-
-        Connection = hubConnectionBuilder.Build();
-
-        if (_options.KeepAliveInterval is not null)
-            Connection.KeepAliveInterval = _options.KeepAliveInterval.Value;
-
+        builder.WithAutomaticReconnect(new ConfiguredRetryPolicy(options));
+        Connection = builder.Build();
+        if (options.KeepAliveInterval is { } keepAlive) Connection.KeepAliveInterval = keepAlive;
+        if (options.ServerTimeout is { } serverTimeout) Connection.ServerTimeout = serverTimeout;
         Connection.Closed += OnConnectionClosed;
         Connection.Reconnecting += OnConnectionReconnecting;
         Connection.Reconnected += OnConnectionReconnected;
+    }
 
-        _retryShield = Shield.When<Exception>(ex =>
-                             {
-                                 _options.Logger?.LogError(ex, "SignalR retry handler caught exception when connecting to hub ({HubUrl})", _options.HubUrl);
-                                 return true; // always retry on any exception
-                             })
-                             .Retry(options =>
-                             {
-                                 options.MaxRetries = _options.MaxRetryAttempts;
-                                 options.Backoff = Backoff.Custom(attempt =>
-                                 {
-                                     // Attempts are 1-based. Cap shift to avoid overflow / absurd delays.
-                                     int shift = attempt <= 30 ? attempt : 30;
-                                     double backoffSeconds = 1 << shift; // 2,4,8,...
-                                     double jitter = RandomUtil.NextDouble(); // [0,1)
-                                     return TimeSpan.FromSeconds(backoffSeconds + jitter);
-                                 });
-                                 options.OnRetry = retry =>
-                                 {
-                                     if (Connection.State == HubConnectionState.Connected)
-                                     {
-                                         _options.Logger?.LogInformation("SignalR connected during retry attempt {Attempt}. Skipping further retries.",
-                                             retry.AttemptNumber + 1);
-                                         retry.SuppressAdditionalAttempts();
-                                         return default;
-                                     }
+    public async ValueTask StartConnection(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        _stopping.Value = false;
+        Task? previousReconnect = await CancelReconnect().ConfigureAwait(false);
+        if (previousReconnect is not null) await IgnoreCancellation(previousReconnect).ConfigureAwait(false);
+        if (await TryConnectCycle(cancellationToken).ConfigureAwait(false))
+        {
+            await NotifyConnectionRestored(Connection.ConnectionId, false, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
+        if (_options.ReconnectIndefinitely && !_stopping.Value) await EnsureReconnectLoop().ConfigureAwait(false);
+    }
 
-                                     if (_options.Log)
-                                     {
-                                         _options.Logger?.LogWarning(retry.Exception,
-                                             "SignalR connection attempt {Attempt} failed to hub ({HubUrl}). Waiting {TimeSpan} before next retry.",
-                                             retry.AttemptNumber + 1, _options.HubUrl, retry.Delay);
-                                     }
-
-                                     return default;
-                                 };
-                             });
+    public async Task StopConnection(CancellationToken cancellationToken = default)
+    {
+        if (_disposed.Value) return;
+        _stopping.Value = true;
+        Task? reconnect = await CancelReconnect().ConfigureAwait(false);
+        if (reconnect is not null) await IgnoreCancellation(reconnect).ConfigureAwait(false);
+        using (await _connectionLock.Lock(cancellationToken).ConfigureAwait(false))
+        {
+            if (Connection.State != HubConnectionState.Disconnected) await Connection.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task OnConnectionClosed(Exception? error)
     {
-        if (_disposed.Value || _stopping.Value)
-            return;
-
-        if (_options.Log)
-            _options.Logger?.LogError(error, "Connection closed due to an error. Waiting to reconnect to hub ({HubUrl})...", _options.HubUrl);
-
-        _options.ConnectionClosed?.Invoke(error);
-
-        await HandleReconnect()
-            .NoSync();
+        if (_disposed.Value || _stopping.Value) return;
+        Log(LogLevel.Error, error, "Connection closed. Recovery will continue.");
+        SafeInvoke(_options.ConnectionClosed, error, "ConnectionClosed");
+        if (_options.ReconnectIndefinitely) await EnsureReconnectLoop().ConfigureAwait(false);
+        else SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
     }
 
     private Task OnConnectionReconnecting(Exception? error)
     {
-        if (_disposed.Value)
-            return Task.CompletedTask;
-
-        if (_options.Log)
-            _options.Logger?.LogWarning(error, "Connection lost due to an error. Reconnecting to hub ({HubUrl})...", _options.HubUrl);
-
-        _options.ConnectionReconnecting?.Invoke(error);
+        if (!_disposed.Value)
+        {
+            Log(LogLevel.Warning, error, "Connection lost. Reconnecting.");
+            SafeInvoke(_options.ConnectionReconnecting, error, "ConnectionReconnecting");
+        }
         return Task.CompletedTask;
     }
 
     private async Task OnConnectionReconnected(string? connectionId)
     {
-        if (_disposed.Value)
-            return;
-
-        if (_options.Log)
-            _options.Logger?.LogInformation("Reconnected to hub ({HubUrl}). Connection ID: {ConnectionId}", _options.HubUrl, connectionId);
-
-        _options.ConnectionReconnected?.Invoke(connectionId);
-        await NotifyConnectionRestored(connectionId, true).NoSync();
+        if (_disposed.Value || _stopping.Value) return;
+        SafeInvoke(_options.ConnectionReconnected, connectionId, "ConnectionReconnected");
+        try { await NotifyConnectionRestored(connectionId, true, _lifetime.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
     }
 
-    private async ValueTask HandleReconnect(CancellationToken cancellationToken = default)
+    private async ValueTask EnsureReconnectLoop()
     {
-        if (_disposed.Value)
-            return;
+        using (await _reconnectLock.Lock(_lifetime.Token).ConfigureAwait(false))
+        {
+            if (_reconnectTask is { IsCompleted: false } || _stopping.Value || _disposed.Value) return;
+            _reconnectCancellation?.Dispose();
+            _reconnectCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            _reconnectTask = ReconnectLoop(_reconnectCancellation.Token);
+        }
+    }
 
-        if (!_reconnecting.TrySetTrue())
-            return; // already reconnecting
-
-        CancellationToken linkedCancellationToken = cancellationToken.Link(_lifetimeCancellationSource.Token, out CancellationTokenSource? linkedCancellationSource);
-        using var linkedCancellationSourceScope = linkedCancellationSource;
-
+    private async Task ReconnectLoop(CancellationToken cancellationToken)
+    {
         try
         {
-            while (!_disposed.Value)
+            while (!_stopping.Value && !cancellationToken.IsCancellationRequested)
             {
+                if (await TryConnectCycle(cancellationToken).ConfigureAwait(false))
+                {
+                    await NotifyConnectionRestored(Connection.ConnectionId, true, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
+                if (!_options.ReconnectIndefinitely) return;
+                await Task.Delay(_options.InitialRetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private async Task<bool> TryConnectCycle(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= _options.MaxRetryAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_stopping.Value || _disposed.Value) return false;
+            if (Connection.State == HubConnectionState.Connected) return true;
+            if (Connection.State != HubConnectionState.Disconnected)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            if (attempt > 0) await Task.Delay(_options.GetRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
+            using (await _connectionLock.Lock(cancellationToken).ConfigureAwait(false))
+            {
+                if (Connection.State == HubConnectionState.Connected) return true;
+                if (Connection.State != HubConnectionState.Disconnected) continue;
                 try
                 {
-                    await _retryShield.ExecuteAsync(async ct =>
-                                      {
-                                          if (_disposed.Value)
-                                              return;
-
-                                          await Connection.StartAsync(ct)
-                                                          .NoSync();
-
-                                          if (_options.Log)
-                                              _options.Logger?.LogInformation("SignalR reconnected to hub ({HubUrl}).", _options.HubUrl);
-
-                                          await NotifyConnectionRestored(Connection.ConnectionId, true).NoSync();
-                                      }, linkedCancellationToken)
-                                      .NoSync();
-                    return;
+                    await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
+                    if (Connection.State == HubConnectionState.Connected) return true;
                 }
-                catch (OperationCanceledException) when (linkedCancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    if (!_options.ReconnectIndefinitely)
-                    {
-                        if (_options.Log)
-                            _options.Logger?.LogError(ex, "Max retry attempts reached. Stopping retries to hub ({HubUrl}).", _options.HubUrl);
-
-                        _options.RetriesExhausted?.Invoke();
-                        return;
-                    }
-
-                    if (_options.Log)
-                        _options.Logger?.LogWarning(ex,
-                            "SignalR reconnect cycle exhausted for hub ({HubUrl}). Recovery will continue after {Delay}.", _options.HubUrl,
-                            _options.InitialRetryDelay);
-
-                    await Task.Delay(_options.InitialRetryDelay, linkedCancellationToken).NoSync();
-                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception ex) { Log(LogLevel.Warning, ex, $"Connection attempt {attempt + 1} failed."); }
             }
         }
-        catch (OperationCanceledException) when (linkedCancellationToken.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            _reconnecting.Value = false;
-        }
+        return false;
     }
 
-    public async ValueTask StartConnection(CancellationToken cancellationToken = default)
+    private async Task NotifyConnectionRestored(string? connectionId, bool isReconnect, CancellationToken cancellationToken)
     {
-        if (_disposed.Value)
-            return;
+        if (_options.ConnectionRestored is not { } callback) return;
+        cancellationToken.ThrowIfCancellationRequested();
+        try { await callback(new SignalRConnectionRestoredContext(connectionId, isReconnect)).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) { Log(LogLevel.Error, ex, "ConnectionRestored callback failed."); }
+    }
 
-        _stopping.Value = false;
-
-        try
+    private async ValueTask<Task?> CancelReconnect()
+    {
+        using (await _reconnectLock.Lock().ConfigureAwait(false))
         {
-            await _retryShield.ExecuteAsync(async ct =>
-                              {
-                                  if (_disposed.Value)
-                                      return;
-
-                                  await Connection.StartAsync(ct)
-                                                  .NoSync();
-                                  // do not trust success here immediately
-                              }, cancellationToken)
-                              .NoSync();
-
-            if (_disposed.Value)
-                return;
-
-            if (Connection.State == HubConnectionState.Connected)
-            {
-                _options.Logger?.LogInformation("SignalR connected to hub ({HubUrl}).", _options.HubUrl);
-                await NotifyConnectionRestored(Connection.ConnectionId, false).NoSync();
-            }
-            else
-            {
-                _options.Logger?.LogWarning("SignalR connection attempt finished but state is {State}.", Connection.State);
-            }
-        }
-        catch (Exception ex)
-        {
-            _options.Logger?.LogError(ex, "Max retry attempts reached during initial connection to hub ({HubUrl}). Stopping retries.", _options.HubUrl);
-            _options.RetriesExhausted?.Invoke();
+            _reconnectCancellation?.Cancel();
+            return _reconnectTask;
         }
     }
 
-    private Task NotifyConnectionRestored(string? connectionId, bool isReconnect)
+    private void SafeInvoke(Action? callback, string name)
     {
-        Func<SignalRConnectionRestoredContext, Task>? callback = _options.ConnectionRestored;
-        return callback is null
-            ? Task.CompletedTask
-            : callback(new SignalRConnectionRestoredContext(connectionId, isReconnect));
+        try { callback?.Invoke(); } catch (Exception ex) { Log(LogLevel.Error, ex, $"{name} callback failed."); }
     }
 
-    public Task StopConnection(CancellationToken cancellationToken = default)
+    private void SafeInvoke<T>(Action<T>? callback, T value, string name)
     {
-        if (_disposed.Value)
-            return Task.CompletedTask;
-
-        _stopping.Value = true;
-
-        if (_options.Log)
-            _options.Logger?.LogInformation("SignalR disconnecting from hub ({HubUrl})...", _options.HubUrl);
-
-        return Connection.StopAsync(cancellationToken);
+        try { callback?.Invoke(value); } catch (Exception ex) { Log(LogLevel.Error, ex, $"{name} callback failed."); }
     }
 
-    /// <summary>
-    /// Asynchronously releases resources used by the current instance.
-    /// </summary>
-    /// <returns>A task that represents the asynchronous operation.</returns>
+    private void Log(LogLevel level, Exception? exception, string message)
+    {
+        if (_options.Log) _options.Logger?.Log(level, exception, "{Message} Hub: {HubUrl}", message, _options.HubUrl);
+    }
+
+    private static async Task IgnoreCancellation(Task task)
+    {
+        try { await task.ConfigureAwait(false); } catch (OperationCanceledException) { }
+    }
+
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed.Value, this);
+
     public async ValueTask DisposeAsync()
     {
-        if (!_disposed.TrySetTrue())
-            return; // already disposed
-
-        await _lifetimeCancellationSource.CancelAsync().NoSync();
-
-        if (_options.Log)
-            _options.Logger?.LogInformation("Disposing SignalR connection to hub ({HubUrl})...", _options.HubUrl);
-
+        if (!_disposed.TrySetTrue()) return;
+        _stopping.Value = true;
+        await _lifetime.CancelAsync().ConfigureAwait(false);
+        Task? reconnect = await CancelReconnect().ConfigureAwait(false);
+        if (reconnect is not null) await IgnoreCancellation(reconnect).ConfigureAwait(false);
         Connection.Closed -= OnConnectionClosed;
         Connection.Reconnected -= OnConnectionReconnected;
         Connection.Reconnecting -= OnConnectionReconnecting;
+        using (await _connectionLock.Lock().ConfigureAwait(false))
+        {
+            if (Connection.State != HubConnectionState.Disconnected) await Connection.StopAsync().ConfigureAwait(false);
+            await Connection.DisposeAsync().ConfigureAwait(false);
+        }
+        _reconnectCancellation?.Dispose();
+        await _reconnectLock.DisposeAsync().ConfigureAwait(false);
+        await _connectionLock.DisposeAsync().ConfigureAwait(false);
+        _lifetime.Dispose();
+    }
 
-        await StopConnection()
-            .NoSync();
-        await Connection.DisposeAsync()
-                        .NoSync();
-        _lifetimeCancellationSource.Dispose();
+    private sealed class ConfiguredRetryPolicy(SignalRWebClientOptions options) : IRetryPolicy
+    {
+        public TimeSpan? NextRetryDelay(RetryContext context) => context.PreviousRetryCount >= options.MaxRetryAttempts
+            ? null : options.GetRetryDelay(context.PreviousRetryCount);
     }
 }
