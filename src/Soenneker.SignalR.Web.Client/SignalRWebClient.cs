@@ -44,6 +44,8 @@ public sealed class SignalRWebClient : ISignalRWebClient
             if (options.Headers is not null)
                 foreach (KeyValuePair<string, string> header in options.Headers) http.Headers.Add(header.Key, header.Value);
             if (options.TransportType is { } transport) http.Transports = transport;
+            if (options.HttpMessageHandlerFactory is not null)
+                http.HttpMessageHandlerFactory = options.HttpMessageHandlerFactory;
         });
         if (options.StatefulReconnect)
         {

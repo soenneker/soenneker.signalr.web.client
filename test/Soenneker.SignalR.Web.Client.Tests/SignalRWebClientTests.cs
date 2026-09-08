@@ -49,6 +49,26 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
+    public async Task Negotiation_uses_configured_http_handler_factory()
+    {
+        var invoked = false;
+        await using var client = new SignalRWebClient(new SignalRWebClientOptions
+        {
+            HubUrl = "https://localhost/hub", MaxRetryAttempts = 0, ReconnectIndefinitely = false,
+            HttpMessageHandlerFactory = handler =>
+            {
+                invoked = true;
+                handler.Dispose();
+                throw new InvalidOperationException("Stop before issuing a network request.");
+            }
+        });
+
+        await client.StartConnection();
+
+        await Assert.That(invoked).IsTrue();
+    }
+
+    [Test]
     public async Task Cancelled_initial_connection_propagates_cancellation()
     {
         await using var client = new SignalRWebClient(new SignalRWebClientOptions

@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Soenneker.SignalR.Web.Client.Events;
 
@@ -54,6 +55,12 @@ public sealed class SignalRWebClientOptions
     /// Gets or sets the custom headers to be sent with each request.
     /// </summary>
     public IDictionary<string, string>? Headers { get; set; }
+
+    /// <summary>
+    /// Gets or sets a factory that wraps the HTTP handler used for negotiation and HTTP transports.
+    /// Browser clients can use a delegating handler to include cookies in cross-origin requests.
+    /// </summary>
+    public Func<HttpMessageHandler, HttpMessageHandler>? HttpMessageHandlerFactory { get; set; }
 
     /// <summary>
     /// Gets or sets the transport to require, or null to let SignalR negotiate the best available transport.
