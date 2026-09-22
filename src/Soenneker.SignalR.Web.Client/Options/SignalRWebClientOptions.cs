@@ -113,6 +113,10 @@ public sealed class SignalRWebClientOptions
     /// Gets or sets the asynchronous callback invoked after an initial connection
     /// or reconnection succeeds. Applications should use this callback to reload
     /// authoritative state that may have changed while disconnected.
+    /// Failed callbacks are retried using the configured retry budget and delays, so
+    /// synchronization must be idempotent. Honor the context's cancellation token:
+    /// stop, disposal, or a newer connection cancels the current restoration.
+    /// A callback that ignores cancellation may finish after it has been superseded.
     /// </summary>
     public Func<SignalRConnectionRestoredContext, Task>? ConnectionRestored { get; set; }
 

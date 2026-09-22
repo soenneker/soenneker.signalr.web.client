@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace Soenneker.SignalR.Web.Client.Events;
 
 /// <summary>
@@ -17,9 +19,21 @@ public sealed class SignalRConnectionRestoredContext
     /// </summary>
     public bool IsReconnect { get; }
 
+    /// <summary>
+    /// Cancels when this connection is superseded or the client stops. Restoration
+    /// callbacks should pass this token to their asynchronous synchronization work.
+    /// </summary>
+    public CancellationToken CancellationToken { get; }
+
     public SignalRConnectionRestoredContext(string? connectionId, bool isReconnect)
+        : this(connectionId, isReconnect, default)
+    {
+    }
+
+    public SignalRConnectionRestoredContext(string? connectionId, bool isReconnect, CancellationToken cancellationToken)
     {
         ConnectionId = connectionId;
         IsReconnect = isReconnect;
+        CancellationToken = cancellationToken;
     }
 }

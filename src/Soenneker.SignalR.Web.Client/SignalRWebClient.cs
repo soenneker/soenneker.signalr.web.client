@@ -17,13 +17,16 @@ public sealed class SignalRWebClient : ISignalRWebClient
 {
     public HubConnection Connection { get; }
     private readonly SignalRWebClientOptions _options;
-    private readonly CancellationTokenSource _lifetime = new();
-    private readonly AsyncLock _connectionLock = new();
-    private readonly AsyncLock _reconnectLock = new();
-    private CancellationTokenSource? _reconnectCancellation;
-    private Task? _reconnectTask;
-    private ValueAtomicBool _stopping;
+    private readonly AsyncLock _gate = new();
+    private readonly AsyncLocal<Recovery?> _callbackRecovery = new();
+    private Recovery? _recovery;
+    private Task? _stopTask;
+    private readonly TaskCompletionSource _disposeCompletion = NewCompletion();
     private ValueAtomicBool _disposed;
+    private bool _enabled;
+    private bool _hasConnected;
+
+    private static TaskCompletionSource NewCompletion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public SignalRWebClient(SignalRWebClientOptions options)
     {
@@ -64,133 +67,313 @@ public sealed class SignalRWebClient : ISignalRWebClient
 
     public async ValueTask StartConnection(CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
-        _stopping.Value = false;
-        Task? previousReconnect = await CancelReconnect().ConfigureAwait(false);
-        if (previousReconnect is not null) await IgnoreCancellation(previousReconnect).ConfigureAwait(false);
-        if (await TryConnectCycle(cancellationToken).ConfigureAwait(false))
+        cancellationToken.ThrowIfCancellationRequested();
+        while (true)
         {
-            await NotifyConnectionRestored(Connection.ConnectionId, false, cancellationToken).ConfigureAwait(false);
-            return;
+            Task pending;
+            bool stopping;
+            using (await _gate.Lock(cancellationToken).ConfigureAwait(false))
+            {
+                ObjectDisposedException.ThrowIf(_disposed.Value, this);
+                stopping = _stopTask is { IsCompleted: false };
+                if (stopping)
+                    pending = _stopTask!;
+                else
+                {
+                    _enabled = true;
+                    Recovery recovery = EnsureRecoveryLocked();
+                    // A restoration callback can ensure the connection without awaiting itself.
+                    if (_callbackRecovery.Value == recovery) return;
+                    pending = recovery.Completion.Task;
+                }
+            }
+            // Caller cancellation cancels only this wait, not other callers' shared recovery.
+            await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!stopping) return;
         }
-        SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
-        if (_options.ReconnectIndefinitely && !_stopping.Value) await EnsureReconnectLoop().ConfigureAwait(false);
     }
 
     public async Task StopConnection(CancellationToken cancellationToken = default)
     {
-        if (_disposed.Value) return;
-        _stopping.Value = true;
-        Task? reconnect = await CancelReconnect().ConfigureAwait(false);
-        if (reconnect is not null) await IgnoreCancellation(reconnect).ConfigureAwait(false);
-        using (await _connectionLock.Lock(cancellationToken).ConfigureAwait(false))
+        cancellationToken.ThrowIfCancellationRequested();
+        Task pending;
+        try
         {
-            if (Connection.State != HubConnectionState.Disconnected) await Connection.StopAsync(cancellationToken).ConfigureAwait(false);
+            using (await _gate.Lock(cancellationToken).ConfigureAwait(false))
+                pending = _disposed.Value ? _disposeCompletion.Task : BeginStopLocked();
         }
+        catch (ObjectDisposedException) when (_disposed.Value)
+        {
+            pending = _disposeCompletion.Task;
+        }
+        await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task BeginStopLocked()
+    {
+        _enabled = false;
+        if (_stopTask is { IsCompleted: false }) return _stopTask;
+        Recovery? recovery = _recovery;
+        // Publish the task before cancellation or user callbacks can run.
+        return _stopTask = Task.Run(() => StopCore(recovery));
+    }
+
+    private async Task StopCore(Recovery? recovery)
+    {
+        if (recovery != null)
+        {
+            try { await recovery.Cancellation.CancelAsync().ConfigureAwait(false); }
+            catch (ObjectDisposedException) { }
+            catch (Exception ex) { Log(LogLevel.Error, ex, "Recovery cancellation callback failed."); }
+            await recovery.Worker.ConfigureAwait(false);
+        }
+        await Connection.StopAsync().ConfigureAwait(false);
+    }
+
+    private Recovery EnsureRecoveryLocked()
+    {
+        if (_recovery != null) return _recovery;
+        var recovery = new Recovery { IsReconnect = _hasConnected };
+        _recovery = recovery;
+        recovery.Worker = Task.Run(() => Recover(recovery));
+        return recovery;
     }
 
     private async Task OnConnectionClosed(Exception? error)
     {
-        if (_disposed.Value || _stopping.Value) return;
-        Log(LogLevel.Error, error, "Connection closed. Recovery will continue.");
+        await ConnectionChanged(closed: true).ConfigureAwait(false);
+        if (await IsStopping().ConfigureAwait(false)) return;
+        Log(LogLevel.Warning, error, "Connection closed.");
         SafeInvoke(_options.ConnectionClosed, error, "ConnectionClosed");
-        if (_options.ReconnectIndefinitely) await EnsureReconnectLoop().ConfigureAwait(false);
-        else SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
+        if (!_options.ReconnectIndefinitely) SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
     }
 
-    private Task OnConnectionReconnecting(Exception? error)
+    private async Task OnConnectionReconnecting(Exception? error)
     {
-        if (!_disposed.Value)
+        await ConnectionChanged(reconnecting: true).ConfigureAwait(false);
+        if (!await IsStopping().ConfigureAwait(false))
         {
             Log(LogLevel.Warning, error, "Connection lost. Reconnecting.");
             SafeInvoke(_options.ConnectionReconnecting, error, "ConnectionReconnecting");
         }
-        return Task.CompletedTask;
     }
 
     private async Task OnConnectionReconnected(string? connectionId)
     {
-        if (_disposed.Value || _stopping.Value) return;
-        SafeInvoke(_options.ConnectionReconnected, connectionId, "ConnectionReconnected");
-        try { await NotifyConnectionRestored(connectionId, true, _lifetime.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        await ConnectionChanged().ConfigureAwait(false);
+        if (!await IsStopping().ConfigureAwait(false)) SafeInvoke(_options.ConnectionReconnected, connectionId, "ConnectionReconnected");
     }
 
-    private async ValueTask EnsureReconnectLoop()
+    private async ValueTask<bool> IsStopping()
     {
-        using (await _reconnectLock.Lock(_lifetime.Token).ConfigureAwait(false))
-        {
-            if (_reconnectTask is { IsCompleted: false } || _stopping.Value || _disposed.Value) return;
-            _reconnectCancellation?.Dispose();
-            _reconnectCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-            _reconnectTask = ReconnectLoop(_reconnectCancellation.Token);
-        }
-    }
-
-    private async Task ReconnectLoop(CancellationToken cancellationToken)
-    {
+        if (_disposed.Value) return true;
         try
         {
-            while (!_stopping.Value && !cancellationToken.IsCancellationRequested)
-            {
-                if (await TryConnectCycle(cancellationToken).ConfigureAwait(false))
-                {
-                    await NotifyConnectionRestored(Connection.ConnectionId, true, cancellationToken).ConfigureAwait(false);
-                    return;
-                }
-                SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
-                if (!_options.ReconnectIndefinitely) return;
-                await Task.Delay(_options.InitialRetryDelay, cancellationToken).ConfigureAwait(false);
-            }
+            using (await _gate.Lock().ConfigureAwait(false))
+                return _disposed.Value || !_enabled || _stopTask is { IsCompleted: false };
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-    }
-
-    private async Task<bool> TryConnectCycle(CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; attempt <= _options.MaxRetryAttempts; attempt++)
+        catch (ObjectDisposedException) when (_disposed.Value)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_stopping.Value || _disposed.Value) return false;
-            if (Connection.State == HubConnectionState.Connected) return true;
-            if (Connection.State != HubConnectionState.Disconnected)
-            {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            if (attempt > 0) await Task.Delay(_options.GetRetryDelay(attempt), cancellationToken).ConfigureAwait(false);
-            using (await _connectionLock.Lock(cancellationToken).ConfigureAwait(false))
-            {
-                if (Connection.State == HubConnectionState.Connected) return true;
-                if (Connection.State != HubConnectionState.Disconnected) continue;
-                try
-                {
-                    await Connection.StartAsync(cancellationToken).ConfigureAwait(false);
-                    if (Connection.State == HubConnectionState.Connected) return true;
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception ex) { Log(LogLevel.Warning, ex, $"Connection attempt {attempt + 1} failed."); }
-            }
+            return true;
         }
-        return false;
     }
 
-    private async Task NotifyConnectionRestored(string? connectionId, bool isReconnect, CancellationToken cancellationToken)
+    private async Task ConnectionChanged(bool closed = false, bool reconnecting = false)
     {
-        if (_options.ConnectionRestored is not { } callback) return;
-        cancellationToken.ThrowIfCancellationRequested();
-        try { await callback(new SignalRConnectionRestoredContext(connectionId, isReconnect)).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception ex) { Log(LogLevel.Error, ex, "ConnectionRestored callback failed."); }
-    }
-
-    private async ValueTask<Task?> CancelReconnect()
-    {
-        using (await _reconnectLock.Lock().ConfigureAwait(false))
+        if (_disposed.Value) return;
+        CancellationTokenSource? restoration;
+        try
         {
-            _reconnectCancellation?.Cancel();
-            return _reconnectTask;
+            using (await _gate.Lock().ConfigureAwait(false))
+            {
+                if (_disposed.Value || !_enabled || _stopTask is { IsCompleted: false }) return;
+                Recovery? recovery = _recovery;
+                if (recovery == null)
+                {
+                    if (closed && !_options.ReconnectIndefinitely) return;
+                    recovery = EnsureRecoveryLocked();
+                }
+                recovery.Revision++;
+                recovery.IsReconnect = true;
+                recovery.AutomaticReconnectPending = reconnecting;
+                if (recovery.Completion.Task.IsCompleted) recovery.Completion = NewCompletion();
+                restoration = recovery.Restoration;
+                if (recovery.Changed.CurrentCount == 0) recovery.Changed.Release();
+                if (closed && !_options.ReconnectIndefinitely)
+                    _ = CancelRestoration(recovery.Cancellation);
+            }
         }
+        catch (ObjectDisposedException) when (_disposed.Value)
+        {
+            return;
+        }
+        // Do not run application cancellation callbacks under the lifecycle lock.
+        if (restoration != null)
+            _ = CancelRestoration(restoration);
+    }
+
+    private async Task CancelRestoration(CancellationTokenSource cancellation)
+    {
+        try { await cancellation.CancelAsync().ConfigureAwait(false); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Log(LogLevel.Error, ex, "Restoration cancellation callback failed."); }
+    }
+
+    private async Task Recover(Recovery recovery)
+    {
+        CancellationToken token = recovery.Cancellation.Token;
+        var failures = 0;
+        bool exhausted = false;
+        Exception? failure = null;
+        try
+        {
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                bool automaticReconnectPending;
+                using (await _gate.Lock().ConfigureAwait(false)) automaticReconnectPending = recovery.AutomaticReconnectPending;
+                if (automaticReconnectPending)
+                {
+                    // HubConnection publishes its new state before delivering Reconnected/Closed.
+                    // Let that event identify the new connection before restoring or restarting it.
+                    await recovery.Changed.WaitAsync(token).ConfigureAwait(false);
+                    continue;
+                }
+                if (Connection.State == HubConnectionState.Connected)
+                {
+                    long revision;
+                    bool restored;
+                    bool isReconnect;
+                    using (await _gate.Lock().ConfigureAwait(false))
+                    {
+                        revision = recovery.Revision;
+                        restored = recovery.RestoredRevision == revision;
+                        isReconnect = recovery.IsReconnect;
+                        _hasConnected = true;
+                    }
+                    if (restored)
+                    {
+                        await recovery.Changed.WaitAsync(token).ConfigureAwait(false);
+                        continue;
+                    }
+                    bool successful = await Restore(recovery, revision, isReconnect, token).ConfigureAwait(false);
+                    using (await _gate.Lock().ConfigureAwait(false))
+                    {
+                        if (revision != recovery.Revision || Connection.State != HubConnectionState.Connected)
+                        {
+                            failures = 0;
+                            continue;
+                        }
+                        if (successful)
+                        {
+                            recovery.RestoredRevision = revision;
+                            recovery.Completion.TrySetResult();
+                            failures = 0;
+                            continue;
+                        }
+                    }
+                }
+                else if (Connection.State != HubConnectionState.Disconnected)
+                {
+                    // Automatic reconnect owns its attempts; waiting must not spend our retry budget.
+                    await recovery.Changed.WaitAsync(TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+                    continue;
+                }
+                else
+                {
+                    try
+                    {
+                        await Connection.StartAsync(token).ConfigureAwait(false);
+                        failures = 0;
+                        continue;
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (Exception ex) { Log(LogLevel.Warning, ex, "Connection attempt failed."); }
+                }
+
+                if (failures++ >= _options.MaxRetryAttempts)
+                {
+                    SafeInvoke(_options.RetriesExhausted, "RetriesExhausted");
+                    if (!_options.ReconnectIndefinitely)
+                    {
+                        exhausted = true;
+                        return;
+                    }
+                    using (await _gate.Lock().ConfigureAwait(false))
+                        recovery.Completion.TrySetResult();
+                    failures = 0;
+                    await Task.Delay(CycleDelay, token).ConfigureAwait(false);
+                    using (await _gate.Lock().ConfigureAwait(false))
+                        if (recovery.Completion.Task.IsCompleted) recovery.Completion = NewCompletion();
+                }
+                else
+                    await Task.Delay(_options.GetRetryDelay(failures - 1), token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, ex, "Connection recovery failed.");
+            failure = ex;
+        }
+        finally
+        {
+            using (await _gate.Lock().ConfigureAwait(false))
+            {
+                if (_recovery == recovery) _recovery = null;
+                recovery.Changed.Dispose();
+                recovery.Cancellation.Dispose();
+                if (failure != null) recovery.Completion.TrySetException(failure);
+                else if (exhausted) recovery.Completion.TrySetResult();
+                else recovery.Completion.TrySetCanceled(token.IsCancellationRequested ? token : new CancellationToken(true));
+            }
+        }
+    }
+
+    private TimeSpan CycleDelay => _options.InitialRetryDelay > TimeSpan.Zero ? _options.InitialRetryDelay : TimeSpan.FromMilliseconds(100);
+
+    private async Task<bool> Restore(Recovery recovery, long revision, bool isReconnect, CancellationToken token)
+    {
+        if (_options.ConnectionRestored is not { } callback) return true;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+        using (await _gate.Lock().ConfigureAwait(false))
+        {
+            if (revision != recovery.Revision || Connection.State != HubConnectionState.Connected) return false;
+            recovery.Restoration = cancellation;
+        }
+        Task? callbackTask = null;
+        try
+        {
+            _callbackRecovery.Value = recovery;
+            callbackTask = callback(new SignalRConnectionRestoredContext(Connection.ConnectionId, isReconnect, cancellation.Token));
+            await callbackTask.WaitAsync(cancellation.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Legacy callbacks have no cancellation parameter. Observe their eventual failure without blocking shutdown.
+            if (callbackTask != null) _ = ObserveCallback(callbackTask);
+            token.ThrowIfCancellationRequested();
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, ex, "ConnectionRestored callback failed; restoration will be retried.");
+            return false;
+        }
+        finally
+        {
+            _callbackRecovery.Value = null;
+            using (await _gate.Lock().ConfigureAwait(false))
+                if (recovery.Restoration == cancellation) recovery.Restoration = null;
+        }
+    }
+
+    private async Task ObserveCallback(Task callback)
+    {
+        try { await callback.ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Log(LogLevel.Error, ex, "Cancelled restoration callback failed."); }
     }
 
     private void SafeInvoke(Action? callback, string name)
@@ -208,37 +391,39 @@ public sealed class SignalRWebClient : ISignalRWebClient
         if (_options.Log) _options.Logger?.Log(level, exception, "{Message} Hub: {HubUrl}", message, _options.HubUrl);
     }
 
-    private static async Task IgnoreCancellation(Task task)
+    public ValueTask DisposeAsync()
     {
-        try { await task.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        if (_disposed.TrySetTrue()) _ = DisposeCore();
+        return new ValueTask(_disposeCompletion.Task);
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed.Value, this);
-
-    public async ValueTask DisposeAsync()
+    private async Task DisposeCore()
     {
-        if (!_disposed.TrySetTrue()) return;
-        _stopping.Value = true;
-        await _lifetime.CancelAsync().ConfigureAwait(false);
-        Task? reconnect = await CancelReconnect().ConfigureAwait(false);
-        if (reconnect is not null) await IgnoreCancellation(reconnect).ConfigureAwait(false);
-        Connection.Closed -= OnConnectionClosed;
-        Connection.Reconnected -= OnConnectionReconnected;
-        Connection.Reconnecting -= OnConnectionReconnecting;
-        using (await _connectionLock.Lock().ConfigureAwait(false))
+        try
         {
-            if (Connection.State != HubConnectionState.Disconnected) await Connection.StopAsync().ConfigureAwait(false);
-            await Connection.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                Task stop;
+                using (await _gate.Lock().ConfigureAwait(false))
+                    stop = BeginStopLocked();
+                try { await stop.ConfigureAwait(false); }
+                finally
+                {
+                    Connection.Closed -= OnConnectionClosed;
+                    Connection.Reconnected -= OnConnectionReconnected;
+                    Connection.Reconnecting -= OnConnectionReconnecting;
+                    await Connection.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                await _gate.DisposeAsync().ConfigureAwait(false);
+            }
+            _disposeCompletion.TrySetResult();
         }
-        _reconnectCancellation?.Dispose();
-        await _reconnectLock.DisposeAsync().ConfigureAwait(false);
-        await _connectionLock.DisposeAsync().ConfigureAwait(false);
-        _lifetime.Dispose();
-    }
-
-    private sealed class ConfiguredRetryPolicy(SignalRWebClientOptions options) : IRetryPolicy
-    {
-        public TimeSpan? NextRetryDelay(RetryContext context) => context.PreviousRetryCount >= options.MaxRetryAttempts
-            ? null : options.GetRetryDelay(context.PreviousRetryCount);
+        catch (Exception ex)
+        {
+            _disposeCompletion.TrySetException(ex);
+        }
     }
 }

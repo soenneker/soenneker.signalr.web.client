@@ -16,16 +16,17 @@ public interface ISignalRWebClient : IAsyncDisposable
     HubConnection Connection { get; }
 
     /// <summary>
-    /// Starts the SignalR connection asynchronously.
+    /// Starts or joins shared connection recovery. Concurrent calls do not restart recovery
+    /// or repeat successful restoration callbacks. A call during stop waits for stop to finish.
     /// </summary>
-    /// <param name="cancellationToken">Token used to cancel the operation.</param>
-    /// <returns>A task that completes after the connection attempt finishes.</returns>
+    /// <param name="cancellationToken">Cancels this caller's wait without cancelling shared recovery. Use StopConnection to stop recovery.</param>
+    /// <returns>A task that completes after restoration succeeds or the current retry cycle is exhausted.</returns>
     ValueTask StartConnection(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Stops the SignalR connection asynchronously.
+    /// Stops connection attempts, restoration, and the transport. Concurrent calls share shutdown.
     /// </summary>
-    /// <param name="cancellationToken">Token used to cancel the operation.</param>
+    /// <param name="cancellationToken">Cancels this caller's wait; shutdown continues in the background.</param>
     /// <returns>A task that completes after the connection has stopped.</returns>
     Task StopConnection(CancellationToken cancellationToken = default);
 }
