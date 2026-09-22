@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
@@ -20,11 +21,16 @@ internal sealed class HubServer : IDisposable
     private readonly IHost _host;
     private readonly ConnectionRegistry _registry = new();
     public volatile bool BlockNegotiation;
+    public volatile bool BlockStop;
     public volatile bool Available = true;
+    public HttpStatusCode FailureStatusCode = HttpStatusCode.ServiceUnavailable;
     public int Negotiations;
     public TaskCompletionSource Negotiating { get; } = Signal();
+    public TaskCompletionSource BlockedNegotiation { get; } = Signal();
     public TaskCompletionSource FailCurrentPoll { get; } = Signal();
     public TaskCompletionSource ReleaseNegotiation { get; } = Signal();
+    public TaskCompletionSource Stopping { get; } = Signal();
+    public TaskCompletionSource ReleaseStop { get; } = Signal();
 
     public HubServer()
     {

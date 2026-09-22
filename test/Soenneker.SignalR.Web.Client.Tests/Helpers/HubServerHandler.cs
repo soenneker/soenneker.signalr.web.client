@@ -10,13 +10,22 @@ internal sealed class HubServerHandler(HubServer server, HttpMessageHandler inne
 {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        if (request.Method == HttpMethod.Delete && server.BlockStop)
+        {
+            server.Stopping.TrySetResult();
+            await server.ReleaseStop.Task.WaitAsync(cancellationToken);
+        }
         if (request.RequestUri!.AbsolutePath.EndsWith("/negotiate", StringComparison.Ordinal))
         {
             Interlocked.Increment(ref server.Negotiations);
             server.Negotiating.TrySetResult();
-            if (server.BlockNegotiation) await server.ReleaseNegotiation.Task.WaitAsync(cancellationToken);
+            if (server.BlockNegotiation)
+            {
+                server.BlockedNegotiation.TrySetResult();
+                await server.ReleaseNegotiation.Task.WaitAsync(cancellationToken);
+            }
         }
-        if (!server.Available) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        if (!server.Available) return new HttpResponseMessage(server.FailureStatusCode);
         using var polling = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task<HttpResponseMessage> response = base.SendAsync(request, polling.Token);
         if (request.Method == HttpMethod.Get && !server.FailCurrentPoll.Task.IsCompleted)
