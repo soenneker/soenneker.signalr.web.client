@@ -12,7 +12,7 @@ public class SignalRResilienceTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
-    public async Task Ensure_waits_across_exhausted_cycles_until_connected_and_restored()
+    public async ValueTask Ensure_waits_across_exhausted_cycles_until_connected_and_restored()
     {
         using var server = new HubServer { Available = false };
         var entered = Signal();
@@ -34,7 +34,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Ensure_reports_finite_exhaustion_with_the_original_failure()
+    public async ValueTask Ensure_reports_finite_exhaustion_with_the_original_failure()
     {
         using var server = new HubServer { Available = false };
         Exception? reported = null;
@@ -56,7 +56,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Ensure_waiter_cancellation_is_local_but_stop_cancels_remaining_waiters()
+    public async ValueTask Ensure_waiter_cancellation_is_local_but_stop_cancels_remaining_waiters()
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
@@ -74,7 +74,7 @@ public class SignalRResilienceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Invalid_retry_provider_falls_back_and_recovers(bool invalidDelay)
+    public async ValueTask Invalid_retry_provider_falls_back_and_recovers(bool invalidDelay)
     {
         using var server = new HubServer { Available = false };
         await using var client = server.Client(options => options.RetryDelayProvider = _ =>
@@ -88,7 +88,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Throwing_retry_provider_also_recovers_during_automatic_reconnect()
+    public async ValueTask Throwing_retry_provider_also_recovers_during_automatic_reconnect()
     {
         using var server = new HubServer();
         var restored = Signal();
@@ -108,7 +108,7 @@ public class SignalRResilienceTests
     [Test]
     [Arguments(HttpStatusCode.Unauthorized)]
     [Arguments(HttpStatusCode.Forbidden)]
-    public async Task Authentication_failures_wait_for_credentials_and_resume_retries_promptly(HttpStatusCode status)
+    public async ValueTask Authentication_failures_wait_for_credentials_and_resume_retries_promptly(HttpStatusCode status)
     {
         using var server = new HubServer { Available = false, FailureStatusCode = status };
         var failed = Signal();
@@ -131,7 +131,7 @@ public class SignalRResilienceTests
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task Automatic_reconnect_deadline_interrupts_stalled_transport(bool indefinite)
+    public async ValueTask Automatic_reconnect_deadline_interrupts_stalled_transport(bool indefinite)
     {
         using var server = new HubServer();
         await using var client = server.Client(options =>
@@ -160,7 +160,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Resume_during_initial_connection_preserves_readiness_waiters()
+    public async ValueTask Resume_during_initial_connection_preserves_readiness_waiters()
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
@@ -173,7 +173,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Restoration_can_join_its_own_resume_without_deadlocking()
+    public async ValueTask Restoration_can_join_its_own_resume_without_deadlocking()
     {
         using var server = new HubServer();
         SignalRWebClient? client = null;
@@ -191,7 +191,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Restoration_cannot_await_its_own_readiness()
+    public async ValueTask Restoration_cannot_await_its_own_readiness()
     {
         using var server = new HubServer();
         SignalRWebClient? client = null;
@@ -201,7 +201,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Suspended_host_recovers_automatically_and_preserves_intentional_stop()
+    public async ValueTask Suspended_host_recovers_automatically_and_preserves_intentional_stop()
     {
         using var server = new HubServer();
         var clock = new SuspendedTimeProvider();
@@ -228,7 +228,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Detached_work_can_ensure_readiness_after_its_parent_restoration_finishes()
+    public async ValueTask Detached_work_can_ensure_readiness_after_its_parent_restoration_finishes()
     {
         using var server = new HubServer();
         var release = Signal();
@@ -248,7 +248,7 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async Task Repeated_resume_cycles_do_not_deliver_old_events_into_new_sessions()
+    public async ValueTask Repeated_resume_cycles_do_not_deliver_old_events_into_new_sessions()
     {
         using var server = new HubServer();
         var restores = 0;

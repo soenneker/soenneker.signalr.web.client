@@ -12,7 +12,7 @@ public class SignalRRecoveryTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
-    public async Task Concurrent_starts_share_one_attempt_and_one_restoration()
+    public async ValueTask Concurrent_starts_share_one_attempt_and_one_restoration()
     {
         using var server = new HubServer();
         server.BlockNegotiation = true;
@@ -33,7 +33,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Cancelling_one_waiter_does_not_cancel_shared_connection()
+    public async ValueTask Cancelling_one_waiter_does_not_cancel_shared_connection()
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
@@ -49,7 +49,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Stop_cancels_initial_negotiation_and_allows_restart()
+    public async ValueTask Stop_cancels_initial_negotiation_and_allows_restart()
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
@@ -64,7 +64,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Concurrent_disposals_cancel_initial_negotiation()
+    public async ValueTask Concurrent_disposals_cancel_initial_negotiation()
     {
         using var server = new HubServer { BlockNegotiation = true };
         var client = server.Client();
@@ -78,7 +78,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Failed_restoration_retries_without_reconnecting_transport()
+    public async ValueTask Failed_restoration_retries_without_reconnecting_transport()
     {
         using var server = new HubServer();
         var callbacks = 0;
@@ -93,7 +93,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Restoration_retries_continue_after_exhausted_cycle()
+    public async ValueTask Restoration_retries_continue_after_exhausted_cycle()
     {
         using var server = new HubServer();
         var callbacks = 0;
@@ -117,7 +117,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Finite_restoration_honors_retry_budget()
+    public async ValueTask Finite_restoration_honors_retry_budget()
     {
         using var server = new HubServer();
         var callbacks = 0;
@@ -135,7 +135,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Disconnect_during_restoration_cancels_stale_work_and_recovers_repeatedly()
+    public async ValueTask Disconnect_during_restoration_cancels_stale_work_and_recovers_repeatedly()
     {
         using var server = new HubServer();
         var callbacks = 0;
@@ -171,7 +171,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Stop_does_not_wait_forever_for_legacy_restoration_callback()
+    public async ValueTask Stop_does_not_wait_forever_for_legacy_restoration_callback()
     {
         using var server = new HubServer();
         var entered = Signal();
@@ -193,7 +193,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Restoration_callback_can_ensure_connection_without_deadlocking()
+    public async ValueTask Restoration_callback_can_ensure_connection_without_deadlocking()
     {
         using var server = new HubServer();
         SignalRWebClient? client = null;
@@ -203,7 +203,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Start_during_stop_waits_for_shutdown_before_restarting()
+    public async ValueTask Start_during_stop_waits_for_shutdown_before_restarting()
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
@@ -218,7 +218,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Initial_failure_continues_recovery_without_another_start()
+    public async ValueTask Initial_failure_continues_recovery_without_another_start()
     {
         using var server = new HubServer { Available = false };
         var exhausted = Signal();
@@ -237,7 +237,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Start_during_automatic_reconnect_waits_without_spending_manual_retry_budget()
+    public async ValueTask Start_during_automatic_reconnect_waits_without_spending_manual_retry_budget()
     {
         using var server = new HubServer();
         var reconnecting = Signal();
@@ -264,7 +264,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Restoration_callback_can_stop_the_client()
+    public async ValueTask Restoration_callback_can_stop_the_client()
     {
         using var server = new HubServer();
         var stopped = Signal();
@@ -284,7 +284,7 @@ public class SignalRRecoveryTests
     }
 
     [Test]
-    public async Task Stop_interrupts_retry_backoff()
+    public async ValueTask Stop_interrupts_retry_backoff()
     {
         using var server = new HubServer { Available = false };
         var delaying = Signal();

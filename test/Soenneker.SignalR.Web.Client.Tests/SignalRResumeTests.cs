@@ -11,7 +11,7 @@ public class SignalRResumeTests
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(15);
 
     [Test]
-    public async Task Concurrent_resume_signals_replace_stale_connection_and_restore_once()
+    public async ValueTask Concurrent_resume_signals_replace_stale_connection_and_restore_once()
     {
         using var server = new HubServer { BlockStop = true };
         var restores = 0;
@@ -39,7 +39,7 @@ public class SignalRResumeTests
     }
 
     [Test]
-    public async Task Resume_leaves_unused_and_intentionally_stopped_clients_stopped()
+    public async ValueTask Resume_leaves_unused_and_intentionally_stopped_clients_stopped()
     {
         using var server = new HubServer();
         await using var client = server.Client();
@@ -53,7 +53,7 @@ public class SignalRResumeTests
     }
 
     [Test]
-    public async Task Explicit_stop_prevents_pending_resume_from_restarting_connection()
+    public async ValueTask Explicit_stop_prevents_pending_resume_from_restarting_connection()
     {
         using var server = new HubServer { BlockStop = true };
         await using var client = server.Client();
@@ -72,7 +72,7 @@ public class SignalRResumeTests
     }
 
     [Test]
-    public async Task Disposal_prevents_pending_resume_from_restarting_connection()
+    public async ValueTask Disposal_prevents_pending_resume_from_restarting_connection()
     {
         using var server = new HubServer { BlockStop = true };
         var client = server.Client();
@@ -95,7 +95,7 @@ public class SignalRResumeTests
     }
 
     [Test]
-    public async Task Cancelling_resume_waiter_does_not_cancel_shared_recovery()
+    public async ValueTask Cancelling_resume_waiter_does_not_cancel_shared_recovery()
     {
         using var server = new HubServer { BlockStop = true };
         await using var client = server.Client();

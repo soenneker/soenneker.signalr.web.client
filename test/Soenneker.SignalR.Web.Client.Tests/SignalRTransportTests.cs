@@ -22,7 +22,7 @@ public class SignalRTransportTests
     [Arguments(HttpTransportType.WebSockets)]
     [Arguments(HttpTransportType.ServerSentEvents)]
     [Arguments(HttpTransportType.LongPolling)]
-    public async Task Real_transport_recovers_after_server_disconnect(HttpTransportType transport)
+    public async ValueTask Real_transport_recovers_after_server_disconnect(HttpTransportType transport)
     {
         var registry = new ConnectionRegistry();
         await using WebApplication app = CreateServer(registry);
@@ -55,7 +55,7 @@ public class SignalRTransportTests
     }
 
     [Test]
-    public async Task Blocked_websocket_upgrade_falls_back_to_an_available_http_transport()
+    public async ValueTask Blocked_websocket_upgrade_falls_back_to_an_available_http_transport()
     {
         var registry = new ConnectionRegistry();
         var rejected = 0;
@@ -83,7 +83,7 @@ public class SignalRTransportTests
     }
 
     [Test]
-    public async Task Silent_websocket_is_detected_by_heartbeat_timeout_and_recovers()
+    public async ValueTask Silent_websocket_is_detected_by_heartbeat_timeout_and_recovers()
     {
         var registry = new ConnectionRegistry();
         await using WebApplication app = CreateServer(registry, TimeSpan.FromMinutes(1));

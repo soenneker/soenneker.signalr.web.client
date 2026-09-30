@@ -16,7 +16,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Reconnect_recovery_is_indefinite_by_default()
+    public async ValueTask Reconnect_recovery_is_indefinite_by_default()
     {
         var options = new SignalRWebClientOptions();
 
@@ -24,7 +24,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Restored_context_distinguishes_reconnects()
+    public async ValueTask Restored_context_distinguishes_reconnects()
     {
         var context = new SignalRConnectionRestoredContext("connection-2", true);
 
@@ -33,7 +33,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Transport_negotiation_is_enabled_by_default()
+    public async ValueTask Transport_negotiation_is_enabled_by_default()
     {
         var options = new SignalRWebClientOptions();
 
@@ -41,7 +41,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Constructor_rejects_invalid_retry_configuration()
+    public async ValueTask Constructor_rejects_invalid_retry_configuration()
     {
         var options = new SignalRWebClientOptions { HubUrl = "https://localhost/hub", MaxRetryAttempts = -1 };
 
@@ -49,7 +49,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Negotiation_uses_configured_http_handler_factory()
+    public async ValueTask Negotiation_uses_configured_http_handler_factory()
     {
         var invoked = false;
         await using var client = new SignalRWebClient(new SignalRWebClientOptions
@@ -69,7 +69,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async Task Cancelled_initial_connection_propagates_cancellation()
+    public async ValueTask Cancelled_initial_connection_propagates_cancellation()
     {
         await using var client = new SignalRWebClient(new SignalRWebClientOptions
         {

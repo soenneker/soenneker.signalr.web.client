@@ -13,7 +13,7 @@ public class SignalRHardeningTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
-    public async Task Stalled_negotiation_times_out_and_retries()
+    public async ValueTask Stalled_negotiation_times_out_and_retries()
     {
         using var server = new HubServer { BlockNegotiation = true };
         var retry = Signal();
@@ -31,7 +31,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Stalled_legacy_token_provider_does_not_block_stop_or_restart()
+    public async ValueTask Stalled_legacy_token_provider_does_not_block_stop_or_restart()
     {
         using var server = new HubServer();
         var entered = Signal();
@@ -57,7 +57,7 @@ public class SignalRHardeningTests
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task Token_or_attempt_timeout_cancels_provider_and_recovers_with_fresh_credentials(bool tokenTimeout)
+    public async ValueTask Token_or_attempt_timeout_cancels_provider_and_recovers_with_fresh_credentials(bool tokenTimeout)
     {
         using var server = new HubServer();
         var cancelled = Signal();
@@ -85,7 +85,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Dispose_interrupts_token_acquisition_during_automatic_reconnect()
+    public async ValueTask Dispose_interrupts_token_acquisition_during_automatic_reconnect()
     {
         using var server = new HubServer();
         var entered = Signal();
@@ -113,7 +113,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Stalled_restoration_is_cancelled_and_retried_without_restarting_transport()
+    public async ValueTask Stalled_restoration_is_cancelled_and_retried_without_restarting_transport()
     {
         using var server = new HubServer();
         var cancelled = Signal();
@@ -136,7 +136,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Stalled_legacy_restoration_does_not_prevent_subsequent_attempts()
+    public async ValueTask Stalled_legacy_restoration_does_not_prevent_subsequent_attempts()
     {
         using var server = new HubServer();
         var stalled = Signal();
@@ -155,7 +155,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Options_mutation_does_not_change_an_existing_clients_retry_budget()
+    public async ValueTask Options_mutation_does_not_change_an_existing_clients_retry_budget()
     {
         using var server = new HubServer { Available = false };
         SignalRWebClientOptions original = null!;
@@ -173,7 +173,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Throwing_logger_and_notifications_do_not_terminate_recovery()
+    public async ValueTask Throwing_logger_and_notifications_do_not_terminate_recovery()
     {
         using var server = new HubServer { Available = false };
         var exhausted = Signal();
@@ -193,7 +193,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async Task Reconnection_interrupts_old_restoration_backoff()
+    public async ValueTask Reconnection_interrupts_old_restoration_backoff()
     {
         using var server = new HubServer();
         var delaying = Signal();
@@ -222,7 +222,7 @@ public class SignalRHardeningTests
     [Arguments(0)]
     [Arguments(-1)]
     [Arguments(86401)]
-    public async Task Invalid_deadlines_are_rejected(int seconds)
+    public async ValueTask Invalid_deadlines_are_rejected(int seconds)
     {
         TimeSpan timeout = TimeSpan.FromSeconds(seconds);
         await Assert.That(() => new SignalRWebClient(new SignalRWebClientOptions
