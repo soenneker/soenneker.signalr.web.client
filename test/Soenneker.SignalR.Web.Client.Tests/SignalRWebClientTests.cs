@@ -16,7 +16,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async ValueTask Reconnect_recovery_is_indefinite_by_default()
+    public async ValueTask Reconnect_recovery_is_indefinite_by_default(CancellationToken cancellationToken)
     {
         var options = new SignalRWebClientOptions();
 
@@ -24,7 +24,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async ValueTask Restored_context_distinguishes_reconnects()
+    public async ValueTask Restored_context_distinguishes_reconnects(CancellationToken cancellationToken)
     {
         var context = new SignalRConnectionRestoredContext("connection-2", true);
 
@@ -33,7 +33,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async ValueTask Transport_negotiation_is_enabled_by_default()
+    public async ValueTask Transport_negotiation_is_enabled_by_default(CancellationToken cancellationToken)
     {
         var options = new SignalRWebClientOptions();
 
@@ -41,7 +41,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async ValueTask Constructor_rejects_invalid_retry_configuration()
+    public async ValueTask Constructor_rejects_invalid_retry_configuration(CancellationToken cancellationToken)
     {
         var options = new SignalRWebClientOptions { HubUrl = "https://localhost/hub", MaxRetryAttempts = -1 };
 
@@ -49,7 +49,7 @@ public class SignalRWebClientTests : HostedUnitTest
     }
 
     [Test]
-    public async ValueTask Negotiation_uses_configured_http_handler_factory()
+    public async ValueTask Negotiation_uses_configured_http_handler_factory(CancellationToken cancellationToken)
     {
         var invoked = false;
         await using var client = new SignalRWebClient(new SignalRWebClientOptions
@@ -63,13 +63,13 @@ public class SignalRWebClientTests : HostedUnitTest
             }
         });
 
-        await client.StartConnection();
+        await client.StartConnection(cancellationToken: cancellationToken);
 
         await Assert.That(invoked).IsTrue();
     }
 
     [Test]
-    public async ValueTask Cancelled_initial_connection_propagates_cancellation()
+    public async ValueTask Cancelled_initial_connection_propagates_cancellation(CancellationToken cancellationToken)
     {
         await using var client = new SignalRWebClient(new SignalRWebClientOptions
         {

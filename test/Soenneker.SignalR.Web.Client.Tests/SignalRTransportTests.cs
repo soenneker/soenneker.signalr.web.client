@@ -22,12 +22,12 @@ public class SignalRTransportTests
     [Arguments(HttpTransportType.WebSockets)]
     [Arguments(HttpTransportType.ServerSentEvents)]
     [Arguments(HttpTransportType.LongPolling)]
-    public async ValueTask Real_transport_recovers_after_server_disconnect(HttpTransportType transport)
+    public async ValueTask Real_transport_recovers_after_server_disconnect(HttpTransportType transport, CancellationToken cancellationToken)
     {
         var registry = new ConnectionRegistry();
         await using WebApplication app = CreateServer(registry);
         app.MapHub<RecoveryHub>("/hub", options => options.AllowStatefulReconnects = true);
-        await app.StartAsync();
+        await app.StartAsync(cancellationToken: cancellationToken);
         var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbacks = 0;
         await using var client = new SignalRWebClient(new SignalRWebClientOptions
@@ -42,20 +42,20 @@ public class SignalRTransportTests
                 return Task.CompletedTask;
             }
         });
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         string firstId = client.Connection.ConnectionId!;
         using var cancellation = new CancellationTokenSource(Deadline);
         while (!registry.Connections.ContainsKey(firstId)) await Task.Delay(10, cancellation.Token);
         await Assert.That(registry.Connections[firstId].Features.Get<IHttpTransportFeature>()!.TransportType).IsEqualTo(transport);
         registry.Connections[firstId].Abort();
-        await restored.Task.WaitAsync(Deadline);
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
         await Assert.That(client.Connection.ConnectionId != firstId).IsTrue();
     }
 
     [Test]
-    public async ValueTask Blocked_websocket_upgrade_falls_back_to_an_available_http_transport()
+    public async ValueTask Blocked_websocket_upgrade_falls_back_to_an_available_http_transport(CancellationToken cancellationToken)
     {
         var registry = new ConnectionRegistry();
         var rejected = 0;
@@ -71,9 +71,9 @@ public class SignalRTransportTests
             await next(context);
         });
         app.MapHub<RecoveryHub>("/hub");
-        await app.StartAsync();
+        await app.StartAsync(cancellationToken: cancellationToken);
         await using var client = new SignalRWebClient(new SignalRWebClientOptions { HubUrl = app.Urls.Single() + "/hub" });
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         string id = client.Connection.ConnectionId!;
         using var cancellation = new CancellationTokenSource(Deadline);
         while (!registry.Connections.ContainsKey(id)) await Task.Delay(10, cancellation.Token);
@@ -83,12 +83,12 @@ public class SignalRTransportTests
     }
 
     [Test]
-    public async ValueTask Silent_websocket_is_detected_by_heartbeat_timeout_and_recovers()
+    public async ValueTask Silent_websocket_is_detected_by_heartbeat_timeout_and_recovers(CancellationToken cancellationToken)
     {
         var registry = new ConnectionRegistry();
         await using WebApplication app = CreateServer(registry, TimeSpan.FromMinutes(1));
         app.MapHub<RecoveryHub>("/hub");
-        await app.StartAsync();
+        await app.StartAsync(cancellationToken: cancellationToken);
         var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Exception? failure = null;
         var calls = 0;
@@ -100,9 +100,9 @@ public class SignalRTransportTests
             RetryDelayProvider = _ => TimeSpan.FromMilliseconds(10),
             ConnectionRestored = _ => { if (Interlocked.Increment(ref calls) == 2) restored.TrySetResult(); return Task.CompletedTask; }
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
-        await restored.Task.WaitAsync(Deadline);
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(failure is TimeoutException).IsTrue();
     }
 

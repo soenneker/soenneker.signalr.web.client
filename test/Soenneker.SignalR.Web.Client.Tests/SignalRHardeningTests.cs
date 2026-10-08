@@ -13,7 +13,7 @@ public class SignalRHardeningTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
-    public async ValueTask Stalled_negotiation_times_out_and_retries()
+    public async ValueTask Stalled_negotiation_times_out_and_retries(CancellationToken cancellationToken)
     {
         using var server = new HubServer { BlockNegotiation = true };
         var retry = Signal();
@@ -22,16 +22,16 @@ public class SignalRHardeningTests
             options.ConnectionAttemptTimeout = TimeSpan.FromMilliseconds(100);
             options.RetryDelayProvider = _ => { retry.TrySetResult(); return TimeSpan.Zero; };
         });
-        Task start = client.StartConnection().AsTask();
-        await retry.Task.WaitAsync(Deadline);
+        Task start = client.StartConnection(cancellationToken: cancellationToken).AsTask();
+        await retry.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         server.ReleaseNegotiation.TrySetResult();
-        await start.WaitAsync(Deadline);
+        await start.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations >= 2).IsTrue();
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
     }
 
     [Test]
-    public async ValueTask Stalled_legacy_token_provider_does_not_block_stop_or_restart()
+    public async ValueTask Stalled_legacy_token_provider_does_not_block_stop_or_restart(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var entered = Signal();
@@ -42,13 +42,13 @@ public class SignalRHardeningTests
             entered.TrySetResult();
             return Interlocked.Increment(ref calls) == 1 ? stalled.Task : Task.FromResult("fresh-token");
         });
-        Task start = client.StartConnection().AsTask();
+        Task start = client.StartConnection(cancellationToken: cancellationToken).AsTask();
         try
         {
-            await entered.Task.WaitAsync(Deadline);
-            await client.StopConnection().WaitAsync(Deadline);
+            await entered.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+            await client.StopConnection(cancellationToken: cancellationToken).WaitAsync(Deadline, cancellationToken: cancellationToken);
             await Assert.That(async () => await start).Throws<OperationCanceledException>();
-            await client.StartConnection().AsTask().WaitAsync(Deadline);
+            await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
         }
         finally { stalled.TrySetException(new InvalidOperationException("Late token failure")); }
@@ -57,7 +57,7 @@ public class SignalRHardeningTests
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async ValueTask Token_or_attempt_timeout_cancels_provider_and_recovers_with_fresh_credentials(bool tokenTimeout)
+    public async ValueTask Token_or_attempt_timeout_cancels_provider_and_recovers_with_fresh_credentials(bool tokenTimeout, CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var cancelled = Signal();
@@ -78,14 +78,14 @@ public class SignalRHardeningTests
                 return "fresh-token";
             };
         });
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
-        await cancelled.Task.WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await cancelled.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(calls >= 2).IsTrue();
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
     }
 
     [Test]
-    public async ValueTask Dispose_interrupts_token_acquisition_during_automatic_reconnect()
+    public async ValueTask Dispose_interrupts_token_acquisition_during_automatic_reconnect(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var entered = Signal();
@@ -99,11 +99,11 @@ public class SignalRHardeningTests
         });
         try
         {
-            await client.StartConnection().AsTask().WaitAsync(Deadline);
+            await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             Volatile.Write(ref block, true);
             server.FailCurrentPoll.TrySetResult();
-            await entered.Task.WaitAsync(Deadline);
-            await client.DisposeAsync().AsTask().WaitAsync(Deadline);
+            await entered.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+            await client.DisposeAsync().AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         }
         finally
         {
@@ -113,7 +113,7 @@ public class SignalRHardeningTests
     }
 
     [Test]
-    public async ValueTask Stalled_restoration_is_cancelled_and_retried_without_restarting_transport()
+    public async ValueTask Stalled_restoration_is_cancelled_and_retried_without_restarting_transport(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var cancelled = Signal();
@@ -129,14 +129,14 @@ public class SignalRHardeningTests
                 catch (OperationCanceledException) { cancelled.TrySetResult(); throw; }
             };
         });
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
-        await cancelled.Task.WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await cancelled.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(calls).IsEqualTo(2);
         await Assert.That(server.Negotiations).IsEqualTo(1);
     }
 
     [Test]
-    public async ValueTask Stalled_legacy_restoration_does_not_prevent_subsequent_attempts()
+    public async ValueTask Stalled_legacy_restoration_does_not_prevent_subsequent_attempts(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var stalled = Signal();
@@ -148,14 +148,14 @@ public class SignalRHardeningTests
         });
         try
         {
-            await client.StartConnection().AsTask().WaitAsync(Deadline);
+            await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             await Assert.That(calls).IsEqualTo(2);
         }
         finally { stalled.TrySetResult(); }
     }
 
     [Test]
-    public async ValueTask Options_mutation_does_not_change_an_existing_clients_retry_budget()
+    public async ValueTask Options_mutation_does_not_change_an_existing_clients_retry_budget(CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false };
         SignalRWebClientOptions original = null!;
@@ -168,12 +168,12 @@ public class SignalRHardeningTests
         original.MaxRetryAttempts = 20;
         original.ReconnectIndefinitely = true;
         original.ConnectionAttemptTimeout = TimeSpan.Zero;
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
     }
 
     [Test]
-    public async ValueTask Throwing_logger_and_notifications_do_not_terminate_recovery()
+    public async ValueTask Throwing_logger_and_notifications_do_not_terminate_recovery(CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false };
         var exhausted = Signal();
@@ -185,15 +185,15 @@ public class SignalRHardeningTests
             options.RetriesExhausted = () => { exhausted.TrySetResult(); throw new InvalidOperationException("Notification failed"); };
             options.ConnectionRestored = _ => { restored.TrySetResult(); return Task.CompletedTask; };
         });
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
-        await exhausted.Task.WaitAsync(Deadline);
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await exhausted.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         server.Available = true;
-        await restored.Task.WaitAsync(Deadline);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
     }
 
     [Test]
-    public async ValueTask Reconnection_interrupts_old_restoration_backoff()
+    public async ValueTask Reconnection_interrupts_old_restoration_backoff(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var delaying = Signal();
@@ -209,12 +209,12 @@ public class SignalRHardeningTests
                 return Task.CompletedTask;
             };
         });
-        Task start = client.StartConnection().AsTask();
-        await delaying.Task.WaitAsync(Deadline);
+        Task start = client.StartConnection(cancellationToken: cancellationToken).AsTask();
+        await delaying.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         // A hub abort closes without automatic reconnect; manual recovery must interrupt the old delay.
         await server.AbortConnection(client.Connection.ConnectionId!);
-        await restored.Task.WaitAsync(Deadline);
-        await start.WaitAsync(Deadline);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await start.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(calls).IsEqualTo(2);
     }
 
@@ -222,7 +222,7 @@ public class SignalRHardeningTests
     [Arguments(0)]
     [Arguments(-1)]
     [Arguments(86401)]
-    public async ValueTask Invalid_deadlines_are_rejected(int seconds)
+    public async ValueTask Invalid_deadlines_are_rejected(int seconds, CancellationToken cancellationToken)
     {
         TimeSpan timeout = TimeSpan.FromSeconds(seconds);
         await Assert.That(() => new SignalRWebClient(new SignalRWebClientOptions

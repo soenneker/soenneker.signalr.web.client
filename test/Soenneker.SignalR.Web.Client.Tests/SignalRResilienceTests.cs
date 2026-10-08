@@ -12,7 +12,7 @@ public class SignalRResilienceTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
-    public async ValueTask Ensure_waits_across_exhausted_cycles_until_connected_and_restored()
+    public async ValueTask Ensure_waits_across_exhausted_cycles_until_connected_and_restored(CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false };
         var entered = Signal();
@@ -22,19 +22,19 @@ public class SignalRResilienceTests
             options.MaxRetryAttempts = 0;
             options.ConnectionRestored = async _ => { entered.TrySetResult(); await release.Task; };
         });
-        Task ready = client.EnsureConnection().AsTask();
-        await client.StartConnection().AsTask().WaitAsync(Deadline);
+        Task ready = client.EnsureConnection(cancellationToken: cancellationToken).AsTask();
+        await client.StartConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(ready.IsCompleted).IsFalse();
         server.Available = true;
-        await entered.Task.WaitAsync(Deadline);
+        await entered.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(ready.IsCompleted).IsFalse();
         release.TrySetResult();
-        await ready.WaitAsync(Deadline);
+        await ready.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
     }
 
     [Test]
-    public async ValueTask Ensure_reports_finite_exhaustion_with_the_original_failure()
+    public async ValueTask Ensure_reports_finite_exhaustion_with_the_original_failure(CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false };
         Exception? reported = null;
@@ -46,7 +46,7 @@ public class SignalRResilienceTests
         });
         try
         {
-            await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+            await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             throw new Exception("Readiness incorrectly succeeded");
         }
         catch (InvalidOperationException error)
@@ -56,25 +56,25 @@ public class SignalRResilienceTests
     }
 
     [Test]
-    public async ValueTask Ensure_waiter_cancellation_is_local_but_stop_cancels_remaining_waiters()
+    public async ValueTask Ensure_waiter_cancellation_is_local_but_stop_cancels_remaining_waiters(CancellationToken cancellationToken)
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
         using var cancellation = new CancellationTokenSource();
         Task first = client.EnsureConnection(cancellation.Token).AsTask();
-        Task second = client.EnsureConnection().AsTask();
-        await server.BlockedNegotiation.Task.WaitAsync(Deadline);
+        Task second = client.EnsureConnection(cancellationToken: cancellationToken).AsTask();
+        await server.BlockedNegotiation.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         cancellation.Cancel();
         await Assert.That(async () => await first).Throws<OperationCanceledException>();
         await Assert.That(second.IsCompleted).IsFalse();
-        await client.StopConnection().WaitAsync(Deadline);
+        await client.StopConnection(cancellationToken: cancellationToken).WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(async () => await second).Throws<OperationCanceledException>();
     }
 
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async ValueTask Invalid_retry_provider_falls_back_and_recovers(bool invalidDelay)
+    public async ValueTask Invalid_retry_provider_falls_back_and_recovers(bool invalidDelay, CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false };
         await using var client = server.Client(options => options.RetryDelayProvider = _ =>
@@ -83,12 +83,12 @@ public class SignalRResilienceTests
             if (invalidDelay) return TimeSpan.MaxValue;
             throw new InvalidOperationException("Custom retry schedule failed");
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
     }
 
     [Test]
-    public async ValueTask Throwing_retry_provider_also_recovers_during_automatic_reconnect()
+    public async ValueTask Throwing_retry_provider_also_recovers_during_automatic_reconnect(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var restored = Signal();
@@ -99,16 +99,16 @@ public class SignalRResilienceTests
             options.ConnectionError = _ => throw new InvalidOperationException("Error observer failed");
             options.ConnectionRestored = _ => { if (Interlocked.Increment(ref calls) == 2) restored.TrySetResult(); return Task.CompletedTask; };
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         server.FailCurrentPoll.TrySetResult();
-        await restored.Task.WaitAsync(Deadline);
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
     }
 
     [Test]
     [Arguments(HttpStatusCode.Unauthorized)]
     [Arguments(HttpStatusCode.Forbidden)]
-    public async ValueTask Authentication_failures_wait_for_credentials_and_resume_retries_promptly(HttpStatusCode status)
+    public async ValueTask Authentication_failures_wait_for_credentials_and_resume_retries_promptly(HttpStatusCode status, CancellationToken cancellationToken)
     {
         using var server = new HubServer { Available = false, FailureStatusCode = status };
         var failed = Signal();
@@ -118,20 +118,20 @@ public class SignalRResilienceTests
             options.AuthenticationRetryDelay = TimeSpan.FromMinutes(1);
             options.RetriesExhausted = () => failed.TrySetResult();
         });
-        Task ready = client.EnsureConnection().AsTask();
-        await failed.Task.WaitAsync(Deadline);
+        Task ready = client.EnsureConnection(cancellationToken: cancellationToken).AsTask();
+        await failed.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(1);
         await Assert.That(ready.IsCompleted).IsFalse();
         server.Available = true;
-        await client.ResumeConnection().AsTask().WaitAsync(Deadline);
-        await ready.WaitAsync(Deadline);
+        await client.ResumeConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await ready.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
     }
 
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async ValueTask Automatic_reconnect_deadline_interrupts_stalled_transport(bool indefinite)
+    public async ValueTask Automatic_reconnect_deadline_interrupts_stalled_transport(bool indefinite, CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         await using var client = server.Client(options =>
@@ -139,69 +139,69 @@ public class SignalRResilienceTests
             options.ReconnectIndefinitely = indefinite;
             options.AutomaticReconnectTimeout = TimeSpan.FromMilliseconds(300);
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         server.BlockNegotiation = true;
         server.FailCurrentPoll.TrySetResult();
-        await server.BlockedNegotiation.Task.WaitAsync(Deadline);
-        Task ready = client.EnsureConnection().AsTask();
+        await server.BlockedNegotiation.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        Task ready = client.EnsureConnection(cancellationToken: cancellationToken).AsTask();
         // The in-flight request remains blocked. Only a new request can now succeed.
         server.BlockNegotiation = false;
         if (indefinite)
         {
-            await ready.WaitAsync(Deadline);
+            await ready.WaitAsync(Deadline, cancellationToken: cancellationToken);
             await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Connected);
             await Assert.That(server.Negotiations).IsEqualTo(3);
         }
         else
         {
-            await Assert.That(async () => await ready.WaitAsync(Deadline)).Throws<InvalidOperationException>();
+            await Assert.That(async () => await ready.WaitAsync(Deadline, cancellationToken: cancellationToken)).Throws<InvalidOperationException>();
             await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Disconnected);
         }
     }
 
     [Test]
-    public async ValueTask Resume_during_initial_connection_preserves_readiness_waiters()
+    public async ValueTask Resume_during_initial_connection_preserves_readiness_waiters(CancellationToken cancellationToken)
     {
         using var server = new HubServer { BlockNegotiation = true };
         await using var client = server.Client();
-        Task ready = client.EnsureConnection().AsTask();
-        await server.BlockedNegotiation.Task.WaitAsync(Deadline);
+        Task ready = client.EnsureConnection(cancellationToken: cancellationToken).AsTask();
+        await server.BlockedNegotiation.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         server.BlockNegotiation = false;
-        await client.ResumeConnection().AsTask().WaitAsync(Deadline);
-        await ready.WaitAsync(Deadline);
+        await client.ResumeConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await ready.WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
     }
 
     [Test]
-    public async ValueTask Restoration_can_join_its_own_resume_without_deadlocking()
+    public async ValueTask Restoration_can_join_its_own_resume_without_deadlocking(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         SignalRWebClient? client = null;
         var calls = 0;
         client = server.Client(options => options.ConnectionRestored = async _ =>
         {
-            if (Interlocked.Increment(ref calls) == 2) await client!.ResumeConnection();
+            if (Interlocked.Increment(ref calls) == 2) await client!.ResumeConnection(cancellationToken: cancellationToken);
         });
         await using (client)
         {
-            await client.EnsureConnection().AsTask().WaitAsync(Deadline);
-            await client.ResumeConnection().AsTask().WaitAsync(Deadline);
+            await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+            await client.ResumeConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             await Assert.That(calls).IsEqualTo(2);
         }
     }
 
     [Test]
-    public async ValueTask Restoration_cannot_await_its_own_readiness()
+    public async ValueTask Restoration_cannot_await_its_own_readiness(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         SignalRWebClient? client = null;
         client = server.Client(options => options.ConnectionRestored = async _ =>
-            await Assert.That(async () => await client!.EnsureConnection()).Throws<InvalidOperationException>());
-        await using (client) await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+            await Assert.That(async () => await client!.EnsureConnection(cancellationToken: cancellationToken)).Throws<InvalidOperationException>());
+        await using (client) await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
     }
 
     [Test]
-    public async ValueTask Suspended_host_recovers_automatically_and_preserves_intentional_stop()
+    public async ValueTask Suspended_host_recovers_automatically_and_preserves_intentional_stop(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var clock = new SuspendedTimeProvider();
@@ -212,23 +212,23 @@ public class SignalRResilienceTests
             options.TimeProvider = clock;
             options.ConnectionRestored = _ => { if (Interlocked.Increment(ref calls) == 2) restored.TrySetResult(); return Task.CompletedTask; };
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
-        await clock.TimerCreated.Task.WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await clock.TimerCreated.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
         clock.Advance(TimeSpan.FromMinutes(10));
         clock.Tick();
-        await restored.Task.WaitAsync(Deadline);
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await restored.Task.WaitAsync(Deadline, cancellationToken: cancellationToken);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
-        await client.StopConnection().WaitAsync(Deadline);
+        await client.StopConnection(cancellationToken: cancellationToken).WaitAsync(Deadline, cancellationToken: cancellationToken);
         clock.Advance(TimeSpan.FromMinutes(10));
         clock.Tick();
-        await client.ResumeConnection();
+        await client.ResumeConnection(cancellationToken: cancellationToken);
         await Assert.That(server.Negotiations).IsEqualTo(2);
         await Assert.That(client.Connection.State).IsEqualTo(HubConnectionState.Disconnected);
     }
 
     [Test]
-    public async ValueTask Detached_work_can_ensure_readiness_after_its_parent_restoration_finishes()
+    public async ValueTask Detached_work_can_ensure_readiness_after_its_parent_restoration_finishes(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var release = Signal();
@@ -236,19 +236,19 @@ public class SignalRResilienceTests
         SignalRWebClient? client = null;
         client = server.Client(options => options.ConnectionRestored = _ =>
         {
-            child = Task.Run(async () => { await release.Task; await client!.EnsureConnection(); });
+            child = Task.Run(async () => { await release.Task; await client!.EnsureConnection(cancellationToken: cancellationToken); }, cancellationToken: cancellationToken);
             return Task.CompletedTask;
         });
         await using (client)
         {
-            await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+            await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
             release.TrySetResult();
-            await child!.WaitAsync(Deadline);
+            await child!.WaitAsync(Deadline, cancellationToken: cancellationToken);
         }
     }
 
     [Test]
-    public async ValueTask Repeated_resume_cycles_do_not_deliver_old_events_into_new_sessions()
+    public async ValueTask Repeated_resume_cycles_do_not_deliver_old_events_into_new_sessions(CancellationToken cancellationToken)
     {
         using var server = new HubServer();
         var restores = 0;
@@ -257,11 +257,11 @@ public class SignalRResilienceTests
             Interlocked.Increment(ref restores);
             return Task.CompletedTask;
         });
-        await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+        await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         for (int cycle = 0; cycle < 25; cycle++)
         {
-            await client.ResumeConnection().AsTask().WaitAsync(Deadline);
-            await client.EnsureConnection().AsTask().WaitAsync(Deadline);
+            await client.ResumeConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
+            await client.EnsureConnection(cancellationToken: cancellationToken).AsTask().WaitAsync(Deadline, cancellationToken: cancellationToken);
         }
         await Assert.That(restores).IsEqualTo(26);
         await Assert.That(server.Negotiations).IsEqualTo(26);
