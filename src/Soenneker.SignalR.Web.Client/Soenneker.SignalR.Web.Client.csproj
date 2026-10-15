@@ -46,7 +46,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.13" />
-        <PackageReference Include="Soenneker.Asyncs.Locks" Version="4.0.112" />
-        <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.53" />
+        <PackageReference Include="Soenneker.Asyncs.Locks" Version="4.0.113" />
+        <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.54" />
     </ItemGroup>
 </Project>
