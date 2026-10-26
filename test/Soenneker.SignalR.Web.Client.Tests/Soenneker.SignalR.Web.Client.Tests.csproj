@@ -20,7 +20,7 @@
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
         <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="11.0.0-rc.3.26522.148" />
         <PackageReference Include="Soenneker.Utils.Test" Version="11.0.343" />
-        <PackageReference Include="Soenneker.Tests.HostedUnit" Version="11.0.340" />
+        <PackageReference Include="Soenneker.Tests.HostedUnit" Version="11.0.342" />
         <PackageReference Include="TUnit" Version="1.76.28" />
     </ItemGroup>
 
