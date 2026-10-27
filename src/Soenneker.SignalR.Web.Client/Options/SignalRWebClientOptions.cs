@@ -15,12 +15,19 @@ namespace Soenneker.SignalR.Web.Client.Options;
 /// Represents the options for configuring a SignalR web client.
 /// Options and headers are copied at construction; later changes do not reconfigure an existing client.
 /// </summary>
-public sealed class SignalRWebClientOptions
+public sealed class SignalRWebClientOptions : ICloneable, IEquatable<SignalRWebClientOptions>
 {
     /// <summary>
     /// Gets or sets the URL of the SignalR hub.
     /// </summary>
     public string HubUrl { get; set; } = null!;
+
+    /// <summary>
+    /// Maximum unfinished token callbacks and, independently, restoration callbacks. Default is two.
+    /// Timed-out work keeps its slot until it finishes. When full, new callback execution waits for a slot;
+    /// stop/disposal still cancel the library's waits. This limit survives stop/resume cycles.
+    /// </summary>
+    public int MaxOutstandingCallbacks { get; set; } = 2;
 
     /// <summary>
     /// Gets or sets the maximum number of retries after the initial connection attempt and during automatic reconnect.
@@ -70,7 +77,7 @@ public sealed class SignalRWebClientOptions
     public TimeSpan? ResumeDetectionThreshold { get; set; } = TimeSpan.FromMinutes(1);
 
     /// <summary>
-    /// Gets or sets the clock used for suspension detection and automatic reconnect deadlines.
+    /// Gets or sets the clock used for suspension detection, wrapper-owned callback/attempt deadlines, and retry waits.
     /// Default is <see cref="System.TimeProvider.System"/>.
     /// </summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
@@ -252,4 +259,46 @@ public sealed class SignalRWebClientOptions
     /// This value is used only when <see cref="StatefulReconnect"/> is enabled.
     /// </summary>
     public int? StatefulReconnectBufferSize { get; set; }
+
+    /// <summary>Copies configuration and headers; callback delegates and application services retain their identities.</summary>
+    public object Clone() => Snapshot();
+
+    /// <summary>Compares configuration values without invoking callbacks or fetching credentials.</summary>
+    public bool Equals(SignalRWebClientOptions? other) => other != null &&
+        Equals(HubUrl, other.HubUrl) &&
+        Equals(MaxOutstandingCallbacks, other.MaxOutstandingCallbacks) &&
+        Equals(MaxRetryAttempts, other.MaxRetryAttempts) &&
+        Equals(ReconnectIndefinitely, other.ReconnectIndefinitely) &&
+        Equals(InitialRetryDelay, other.InitialRetryDelay) &&
+        Equals(ConnectionAttemptTimeout, other.ConnectionAttemptTimeout) &&
+        Equals(AccessTokenTimeout, other.AccessTokenTimeout) &&
+        Equals(RestorationTimeout, other.RestorationTimeout) &&
+        Equals(AutomaticReconnectTimeout, other.AutomaticReconnectTimeout) &&
+        Equals(AuthenticationRetryDelay, other.AuthenticationRetryDelay) &&
+        Equals(ResumeDetectionThreshold, other.ResumeDetectionThreshold) &&
+        Equals(TimeProvider, other.TimeProvider) &&
+        Equals(Logger, other.Logger) &&
+        Equals(Log, other.Log) &&
+        Equals(AccessTokenProvider, other.AccessTokenProvider) &&
+        Equals(AccessTokenProviderWithCancellation, other.AccessTokenProviderWithCancellation) &&
+        Equals(HttpMessageHandlerFactory, other.HttpMessageHandlerFactory) &&
+        Equals(TransportType, other.TransportType) &&
+        Equals(KeepAliveInterval, other.KeepAliveInterval) &&
+        Equals(ServerTimeout, other.ServerTimeout) &&
+        Equals(RetryDelayProvider, other.RetryDelayProvider) &&
+        Equals(UseRetryJitter, other.UseRetryJitter) &&
+        Equals(ConnectionClosed, other.ConnectionClosed) &&
+        Equals(ConnectionReconnecting, other.ConnectionReconnecting) &&
+        Equals(ConnectionReconnected, other.ConnectionReconnected) &&
+        Equals(ConnectionRestored, other.ConnectionRestored) &&
+        Equals(RetriesExhausted, other.RetriesExhausted) &&
+        Equals(ConnectionError, other.ConnectionError) &&
+        Equals(StatefulReconnect, other.StatefulReconnect) &&
+        Equals(StatefulReconnectBufferSize, other.StatefulReconnectBufferSize) &&
+        (Headers?.Count ?? 0) == (other.Headers?.Count ?? 0) &&
+        (Headers == null || Headers.All(pair => other.Headers != null && other.Headers.Any(candidate =>
+            string.Equals(pair.Key, candidate.Key, StringComparison.OrdinalIgnoreCase) && pair.Value == candidate.Value)));
+
+    public override bool Equals(object? obj) => obj is SignalRWebClientOptions other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(HubUrl, MaxRetryAttempts, MaxOutstandingCallbacks);
 }

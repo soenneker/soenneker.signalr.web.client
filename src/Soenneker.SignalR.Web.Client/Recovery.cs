@@ -4,10 +4,10 @@ using System;
 
 namespace Soenneker.SignalR.Web.Client;
 
-internal sealed class Recovery
+internal sealed class Recovery(TimeProvider timeProvider)
 {
     public readonly CancellationTokenSource Cancellation = new();
-    public readonly SemaphoreSlim Changed = new(0, 1);
+    public readonly RecoverySignal Changed = new(timeProvider);
     public TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task Worker = Task.CompletedTask;

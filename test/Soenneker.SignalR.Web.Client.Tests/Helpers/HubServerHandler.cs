@@ -38,6 +38,13 @@ internal sealed class HubServerHandler(HubServer server, HttpMessageHandler inne
                 return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
             }
         }
-        return await response;
+        HttpResponseMessage result = await response;
+        // Graceful SignalR shutdown can end the final poll with 204 instead of issuing DELETE.
+        if (server.BlockStop && request.Method == HttpMethod.Get && result.StatusCode == HttpStatusCode.NoContent)
+        {
+            server.Stopping.TrySetResult();
+            await server.ReleaseStop.Task;
+        }
+        return result;
     }
 }

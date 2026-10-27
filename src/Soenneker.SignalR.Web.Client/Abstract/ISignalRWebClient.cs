@@ -16,6 +16,9 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// </summary>
     HubConnection Connection { get; }
 
+    /// <summary>Returns application readiness, recovery diagnostics, and unfinished callback counts without waiting for a connection.</summary>
+    ValueTask<SignalRClientStatus> GetStatus(CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Starts or joins shared connection recovery. Concurrent calls do not restart recovery
     /// or repeat successful restoration callbacks. A call during stop waits for stop to finish.

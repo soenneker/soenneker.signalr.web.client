@@ -35,14 +35,75 @@ public sealed class SignalRWebClient : ISignalRWebClient
     private readonly CancellationTokenSource _monitorCancellation = new();
     private Task? _monitor;
     private DateTimeOffset _lastRestoredAt;
+    private readonly CallbackTracker _tokenCallbacks;
+    private readonly CallbackTracker _restorationCallbacks;
+    private readonly object _diagnosticsGate = new();
+    private SignalRRecoveryPhase _phase = SignalRRecoveryPhase.Stopped;
+    private Exception? _lastFailure;
+    private long _retryCount;
+    private long _failureCount;
+    private DateTimeOffset? _nextRetryAt;
+    private long? _outageStarted;
+
+    private void Phase(SignalRRecoveryPhase phase, TimeSpan? delay = null)
+    {
+        lock (_diagnosticsGate)
+        {
+            _phase = phase;
+            if (phase == SignalRRecoveryPhase.Stopped) _outageStarted = null;
+            _nextRetryAt = delay is { } value ? _options.TimeProvider.GetUtcNow() + value : null;
+            if (phase is SignalRRecoveryPhase.Connecting or SignalRRecoveryPhase.Reconnecting)
+                _outageStarted ??= _options.TimeProvider.GetTimestamp();
+        }
+    }
+
+    private void Failure(Exception error)
+    {
+        lock (_diagnosticsGate) { _lastFailure = error; _failureCount++; }
+        SignalRClientMetrics.Failed();
+    }
+
+    private void RetryScheduled(TimeSpan delay)
+    {
+        lock (_diagnosticsGate) _retryCount++;
+        Phase(SignalRRecoveryPhase.RetryDelay, delay);
+    }
+
+    public async ValueTask<SignalRClientStatus> GetStatus(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_disposed.Value) return SnapshotStatus(false, SignalRRecoveryPhase.Disposed);
+        try
+        {
+            using (await _gate.Lock(cancellationToken).ConfigureAwait(false))
+            {
+                bool ready = _enabled && _stopTask is not { IsCompleted: false } &&
+                    _recovery is { } recovery && recovery.RestoredRevision == recovery.Revision &&
+                    recovery.RestoredConnectionId == Connection.ConnectionId && Connection.State == HubConnectionState.Connected;
+                return SnapshotStatus(ready, !_enabled ? SignalRRecoveryPhase.Stopped : null);
+            }
+        }
+        catch (ObjectDisposedException) when (_disposed.Value) { return SnapshotStatus(false, SignalRRecoveryPhase.Disposed); }
+    }
+
+    private SignalRClientStatus SnapshotStatus(bool ready, SignalRRecoveryPhase? phase)
+    {
+        lock (_diagnosticsGate)
+            return new SignalRClientStatus
+            {
+                TransportState = Connection.State,
+                IsReady = ready,
+                Phase = phase ?? (ready ? SignalRRecoveryPhase.Ready : _tokenCallbacks.Saturated || _restorationCallbacks.Saturated
+                    ? SignalRRecoveryPhase.WaitingForCallback : _phase),
+                LastFailure = _lastFailure, RetryCount = _retryCount, FailureCount = _failureCount, NextRetryAt = phase != null ? null : _nextRetryAt,
+                LastRestoredAt = _lastRestoredAt == default ? null : _lastRestoredAt,
+                OutstandingTokenCallbacks = _tokenCallbacks.Outstanding,
+                OutstandingRestorationCallbacks = _restorationCallbacks.Outstanding,
+                AbandonedCallbacks = _tokenCallbacks.Abandoned + _restorationCallbacks.Abandoned
+            };
+    }
 
     private static TaskCompletionSource NewCompletion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    private sealed class CallbackScope(Recovery recovery)
-    {
-        public Recovery Recovery { get; } = recovery;
-        public volatile bool Active = true;
-    }
 
     public SignalRWebClient(SignalRWebClientOptions options)
     {
@@ -63,7 +124,10 @@ public sealed class SignalRWebClient : ISignalRWebClient
         if (options.ResumeDetectionThreshold is { } threshold && threshold < TimeSpan.FromSeconds(10))
             throw new ArgumentOutOfRangeException(nameof(options.ResumeDetectionThreshold));
         ArgumentNullException.ThrowIfNull(options.TimeProvider);
+        if (options.MaxOutstandingCallbacks is < 1 or > 1024) throw new ArgumentOutOfRangeException(nameof(options.MaxOutstandingCallbacks));
         _options = options;
+        _tokenCallbacks = new CallbackTracker(options.MaxOutstandingCallbacks, ex => Log(LogLevel.Error, ex, "Abandoned token callback failed."));
+        _restorationCallbacks = new CallbackTracker(options.MaxOutstandingCallbacks, ex => Log(LogLevel.Error, ex, "Abandoned restoration callback failed."));
 
         IHubConnectionBuilder builder = new HubConnectionBuilder().WithUrl(options.HubUrl, http =>
         {
@@ -81,11 +145,14 @@ public sealed class SignalRWebClient : ISignalRWebClient
             if (options.StatefulReconnectBufferSize is { } size)
                 builder.Services.Configure<HubConnectionOptions>(configured => configured.StatefulReconnectBufferSize = size);
         }
-        builder.WithAutomaticReconnect(new ConfiguredRetryPolicy(options));
+        builder.WithAutomaticReconnect(new ConfiguredRetryPolicy(options, RetryScheduled));
+        if (options.Log && options.Logger is { } logger)
+            builder.ConfigureLogging(logging => logging.AddProvider(new ForwardingLoggerProvider(logger)));
         Connection = builder.Build();
         if (options.KeepAliveInterval is { } keepAlive) Connection.KeepAliveInterval = keepAlive;
         if (options.ServerTimeout is { } serverTimeout) Connection.ServerTimeout = serverTimeout;
         AttachConnectionHandlers();
+        SignalRClientMetrics.ClientAdded();
     }
 
     private void AttachConnectionHandlers()
@@ -116,14 +183,8 @@ public sealed class SignalRWebClient : ISignalRWebClient
         {
             using var timeout = CancelAfterSafely(cancellation, _options.AccessTokenTimeout);
             cancellation.Token.ThrowIfCancellationRequested();
-            Task<string> task = _options.AccessTokenProviderWithCancellation is { } provider
-                ? provider(cancellation.Token) : _options.AccessTokenProvider!();
-            try { return await task.WaitAsync(cancellation.Token).ConfigureAwait(false); }
-            catch
-            {
-                _ = ObserveCallback(task);
-                throw;
-            }
+            return await _tokenCallbacks.Invoke(() => _options.AccessTokenProviderWithCancellation is { } provider
+                ? provider(cancellation.Token) : _options.AccessTokenProvider!(), cancellation.Token).ConfigureAwait(false);
         }
     }
 
@@ -315,7 +376,8 @@ public sealed class SignalRWebClient : ISignalRWebClient
     private Recovery EnsureRecoveryLocked()
     {
         if (_recovery != null) return _recovery;
-        var recovery = new Recovery { IsReconnect = _hasConnected };
+        Phase(SignalRRecoveryPhase.Connecting);
+        var recovery = new Recovery(_options.TimeProvider) { IsReconnect = _hasConnected };
         _recovery = recovery;
         recovery.Worker = Task.Run(() => Recover(recovery));
         return recovery;
@@ -383,13 +445,14 @@ public sealed class SignalRWebClient : ISignalRWebClient
                 }
                 recovery.Revision++;
                 if (error != null) recovery.LastError = error;
+                Phase(reconnecting ? SignalRRecoveryPhase.Reconnecting : SignalRRecoveryPhase.Connecting);
                 recovery.IsReconnect = true;
                 recovery.AutomaticReconnectPending = reconnecting;
                 if (reconnecting) recovery.AutomaticReconnectStarted = _options.TimeProvider.GetTimestamp();
                 if (recovery.Completion.Task.IsCompleted) recovery.Completion = NewCompletion();
                 if (recovery.Ready.Task.IsCompleted) recovery.Ready = NewCompletion();
                 restoration = recovery.Restoration;
-                if (recovery.Changed.CurrentCount == 0) recovery.Changed.Release();
+                recovery.Changed.Set();
                 if (closed && !_options.ReconnectIndefinitely)
                 {
                     recovery.Exhausted = true;
@@ -401,6 +464,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
         {
             return false;
         }
+        if (error != null) Failure(error);
         // Do not run application cancellation callbacks under the lifecycle lock.
         if (restoration != null)
             _ = CancelSafely(restoration);
@@ -411,7 +475,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
     {
         // CancelAfter on an application-facing token can throw unhandled exceptions from
         // application cancellation registrations on the timer thread. Observe those via CancelAsync.
-        var timer = new CancellationTokenSource(delay);
+        var timer = new CancellationTokenSource(delay, _options.TimeProvider);
         timer.Token.Register(() => _ = CancelSafely(cancellation));
         return timer;
     }
@@ -463,6 +527,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
                     await Connection.StopAsync().ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     recovery.LastError = new TimeoutException("Automatic reconnect exceeded its deadline.");
+                    Failure(recovery.LastError);
                     _options.ReportConnectionError(recovery.LastError);
                     using (await _gate.Lock().ConfigureAwait(false))
                     {
@@ -500,6 +565,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
                         continue;
                     }
                     bool successful = await Restore(recovery, revision, isReconnect, token).ConfigureAwait(false);
+                    double? outageDuration = null;
                     using (await _gate.Lock().ConfigureAwait(false))
                     {
                         if (revision != recovery.Revision || Connection.State != HubConnectionState.Connected)
@@ -511,12 +577,22 @@ public sealed class SignalRWebClient : ISignalRWebClient
                         {
                             recovery.RestoredRevision = revision;
                             recovery.RestoredConnectionId = Connection.ConnectionId;
-                            _lastRestoredAt = _options.TimeProvider.GetUtcNow();
+                            lock (_diagnosticsGate)
+                            {
+                                _lastRestoredAt = _options.TimeProvider.GetUtcNow();
+                                if (_outageStarted is { } started) outageDuration = _options.TimeProvider.GetElapsedTime(started).TotalSeconds;
+                                _outageStarted = null;
+                            }
+                            Phase(SignalRRecoveryPhase.Ready);
                             recovery.Completion.TrySetResult();
                             recovery.Ready.TrySetResult();
                             failures = 0;
-                            continue;
                         }
+                    }
+                    if (successful)
+                    {
+                        if (outageDuration is { } seconds) SignalRClientMetrics.Outage(seconds);
+                        continue;
                     }
                 }
                 else if (Connection.State != HubConnectionState.Disconnected)
@@ -532,6 +608,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
                     try
                     {
                         using (await _gate.Lock().ConfigureAwait(false)) _connectionAttemptToken = attempt.Token;
+                        Phase(SignalRRecoveryPhase.Connecting);
                         await Connection.StartAsync(attempt.Token).ConfigureAwait(false);
                         failures = 0;
                         continue;
@@ -540,6 +617,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
                     catch (Exception ex)
                     {
                         recovery.LastError = ex;
+                        Failure(ex);
                         Log(LogLevel.Warning, ex, "Connection attempt failed.");
                         _options.ReportConnectionError(ex);
                     }
@@ -563,12 +641,17 @@ public sealed class SignalRWebClient : ISignalRWebClient
                     TimeSpan cycleDelay = CycleDelay;
                     if (SignalRWebClientOptions.IsAuthenticationFailure(recovery.LastError) && cycleDelay < _options.AuthenticationRetryDelay)
                         cycleDelay = _options.AuthenticationRetryDelay;
+                    RetryScheduled(cycleDelay);
                     await recovery.Changed.WaitAsync(cycleDelay, token).ConfigureAwait(false);
                     using (await _gate.Lock().ConfigureAwait(false))
                         if (recovery.Completion.Task.IsCompleted) recovery.Completion = NewCompletion();
                 }
                 else
-                    await recovery.Changed.WaitAsync(_options.GetRetryDelay(failures - 1, recovery.LastError), token).ConfigureAwait(false);
+                {
+                    TimeSpan delay = _options.GetRetryDelay(failures - 1, recovery.LastError);
+                    RetryScheduled(delay);
+                    await recovery.Changed.WaitAsync(delay, token).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -576,12 +659,14 @@ public sealed class SignalRWebClient : ISignalRWebClient
         {
             Log(LogLevel.Error, ex, "Connection recovery failed.");
             failure = ex;
+            Failure(ex);
         }
         finally
         {
             using (await _gate.Lock().ConfigureAwait(false))
             {
                 if (_recovery == recovery) _recovery = null;
+                Phase(failure != null ? SignalRRecoveryPhase.Faulted : exhausted || recovery.Exhausted ? SignalRRecoveryPhase.Exhausted : SignalRRecoveryPhase.Stopped);
                 recovery.Changed.Dispose();
                 recovery.Cancellation.Dispose();
                 if (failure != null) recovery.Completion.TrySetException(failure);
@@ -611,32 +696,39 @@ public sealed class SignalRWebClient : ISignalRWebClient
             if (revision != recovery.Revision || Connection.State != HubConnectionState.Connected) return false;
             recovery.Restoration = cancellation;
         }
-        Task? callbackTask = null;
+        long restorationStarted = _options.TimeProvider.GetTimestamp();
+        Phase(SignalRRecoveryPhase.Restoring);
         var scope = new CallbackScope(recovery);
         try
         {
             _callbackScope.Value = scope;
-            callbackTask = callback(new SignalRConnectionRestoredContext(Connection.ConnectionId, isReconnect, cancellation.Token));
-            await callbackTask.WaitAsync(cancellation.Token).ConfigureAwait(false);
+            string? connectionId = Connection.ConnectionId;
+            await _restorationCallbacks.Invoke(async () =>
+            {
+                await callback(new SignalRConnectionRestoredContext(connectionId, isReconnect, cancellation.Token)).ConfigureAwait(false);
+                return true;
+            }, cancellation.Token).ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
             // Legacy callbacks have no cancellation parameter. Observe their eventual failure without blocking shutdown.
-            if (callbackTask != null) _ = ObserveCallback(callbackTask);
             token.ThrowIfCancellationRequested();
             recovery.LastError = new TimeoutException("Connection restoration was cancelled or exceeded its deadline.");
+            Failure(recovery.LastError);
             Log(LogLevel.Warning, null, "Restoration was cancelled or timed out; current connection state will be checked before retrying.");
             return false;
         }
         catch (Exception ex)
         {
             recovery.LastError = ex;
+            Failure(ex);
             Log(LogLevel.Error, ex, "ConnectionRestored callback failed; restoration will be retried.");
             return false;
         }
         finally
         {
+            SignalRClientMetrics.Restoration(_options.TimeProvider.GetElapsedTime(restorationStarted).TotalSeconds);
             scope.Active = false;
             _callbackScope.Value = null;
             using (await _gate.Lock().ConfigureAwait(false))
@@ -694,6 +786,7 @@ public sealed class SignalRWebClient : ISignalRWebClient
             {
                 await _monitorCancellation.CancelAsync().ConfigureAwait(false);
                 if (_monitor != null) await _monitor.ConfigureAwait(false);
+                SignalRClientMetrics.ClientRemoved();
                 _monitorCancellation.Dispose();
                 _sessionCancellation.Dispose();
                 await _gate.DisposeAsync().ConfigureAwait(false);
