@@ -25,6 +25,9 @@ internal sealed class HubServer : IDisposable
     public volatile bool Available = true;
     public HttpStatusCode FailureStatusCode = HttpStatusCode.ServiceUnavailable;
     public int Negotiations;
+    private int _pollFailureInjected;
+
+    public bool TryFailPoll() => FailCurrentPoll.Task.IsCompleted && Interlocked.CompareExchange(ref _pollFailureInjected, 1, 0) == 0;
     public TaskCompletionSource Negotiating { get; } = Signal();
     public TaskCompletionSource BlockedNegotiation { get; } = Signal();
     public TaskCompletionSource FailCurrentPoll { get; } = Signal();

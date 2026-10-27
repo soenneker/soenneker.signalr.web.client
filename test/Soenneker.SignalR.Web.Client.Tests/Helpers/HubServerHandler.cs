@@ -26,12 +26,16 @@ internal sealed class HubServerHandler(HubServer server, HttpMessageHandler inne
             }
         }
         if (!server.Available) return new HttpResponseMessage(server.FailureStatusCode);
+        // Retain a requested failure until a GET consumes it, even if there was no poll
+        // in flight when the test signaled the outage.
+        if (request.Method == HttpMethod.Get && server.TryFailPoll())
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
         using var polling = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task<HttpResponseMessage> response = base.SendAsync(request, polling.Token);
-        if (request.Method == HttpMethod.Get && !server.FailCurrentPoll.Task.IsCompleted)
+        if (request.Method == HttpMethod.Get)
         {
             Task finished = await Task.WhenAny(response, server.FailCurrentPoll.Task);
-            if (finished != response)
+            if (finished != response && server.TryFailPoll())
             {
                 await polling.CancelAsync();
                 try { (await response).Dispose(); } catch (OperationCanceledException) { }
