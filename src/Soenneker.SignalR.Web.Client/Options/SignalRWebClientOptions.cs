@@ -110,6 +110,18 @@ public sealed class SignalRWebClientOptions : ICloneable, IEquatable<SignalRWebC
     public Func<Task<string>>? AccessTokenProvider { get; set; }
 
     /// <summary>
+    /// Gets or sets whether SignalR automatically refreshes authentication before token expiration.
+    /// Default is true. The server must enable authentication refresh and report the token lifetime.
+    /// </summary>
+    public bool EnableAuthenticationRefresh { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets how far before token expiration to refresh authentication.
+    /// Null uses SignalR's default of five minutes. Zero refreshes at expiration.
+    /// </summary>
+    public TimeSpan? AuthenticationRefreshBeforeExpiration { get; set; }
+
+    /// <summary>
     /// Gets or sets a token provider that supports cancellation on timeout, stop, or disposal.
     /// Takes precedence over <see cref="AccessTokenProvider"/>. Fetch current credentials on each call.
     /// </summary>
@@ -280,6 +292,8 @@ public sealed class SignalRWebClientOptions : ICloneable, IEquatable<SignalRWebC
         Equals(Logger, other.Logger) &&
         Equals(Log, other.Log) &&
         Equals(AccessTokenProvider, other.AccessTokenProvider) &&
+        Equals(EnableAuthenticationRefresh, other.EnableAuthenticationRefresh) &&
+        Equals(AuthenticationRefreshBeforeExpiration, other.AuthenticationRefreshBeforeExpiration) &&
         Equals(AccessTokenProviderWithCancellation, other.AccessTokenProviderWithCancellation) &&
         Equals(HttpMessageHandlerFactory, other.HttpMessageHandlerFactory) &&
         Equals(TransportType, other.TransportType) &&

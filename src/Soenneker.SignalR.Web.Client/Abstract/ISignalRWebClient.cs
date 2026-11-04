@@ -13,6 +13,8 @@ public interface ISignalRWebClient : IAsyncDisposable
     /// <summary>
     /// Gets the underlying SignalR connection for registering hub handlers and invoking hub methods.
     /// Use this wrapper for start, stop, and disposal so recovery remains coordinated.
+    /// Supports .NET 11 invocation cancellation, AuthenticationRefreshed/AuthenticationRefreshFailed events,
+    /// and RefreshAuthenticationAsync for updated credentials without reconnecting on supported servers.
     /// </summary>
     HubConnection Connection { get; }
 

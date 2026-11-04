@@ -115,6 +115,8 @@ public sealed class SignalRWebClient : ISignalRWebClient
             throw new ArgumentOutOfRangeException(nameof(options.InitialRetryDelay));
         if (options.KeepAliveInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options.KeepAliveInterval));
         if (options.ServerTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options.ServerTimeout));
+        if (options.AuthenticationRefreshBeforeExpiration < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.AuthenticationRefreshBeforeExpiration));
         if (options.StatefulReconnectBufferSize <= 0) throw new ArgumentOutOfRangeException(nameof(options.StatefulReconnectBufferSize));
         ValidateTimeout(options.ConnectionAttemptTimeout, nameof(options.ConnectionAttemptTimeout));
         ValidateTimeout(options.AccessTokenTimeout, nameof(options.AccessTokenTimeout));
@@ -146,6 +148,12 @@ public sealed class SignalRWebClient : ISignalRWebClient
                 builder.Services.Configure<HubConnectionOptions>(configured => configured.StatefulReconnectBufferSize = size);
         }
         builder.WithAutomaticReconnect(new ConfiguredRetryPolicy(options, RetryScheduled));
+        builder.WithAuthenticationRefresh(refresh =>
+        {
+            refresh.EnableAutoRefresh = options.EnableAuthenticationRefresh;
+            if (options.AuthenticationRefreshBeforeExpiration is { } beforeExpiration)
+                refresh.RefreshBeforeExpiration = beforeExpiration;
+        });
         if (options.Log && options.Logger is { } logger)
             builder.ConfigureLogging(logging => logging.AddProvider(new ForwardingLoggerProvider(logger)));
         Connection = builder.Build();
